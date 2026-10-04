@@ -13,7 +13,11 @@ from gitguru.ingest import (IngestError, clone, github_check, local_head, normal
 from gitguru.search import split_identifiers
 
 Progress = Callable[[int, str], None]
-EMBED_BATCH = 32
+# Embedding memory grows with batch × length²: 16 chunks × 4,000 chars peaked at 2.3 GB on the
+# 8 GB M3. Small batches plus truncated input keep indexing out of swap. Full text still goes
+# to keyword search and to the LLM.
+EMBED_BATCH = 8
+EMBED_CHARS = 2000
 MAX_CHUNKS = 20_000
 
 
@@ -32,7 +36,7 @@ def _search_text(c: Chunk) -> str:
 
 
 def _embed_input(c: Chunk) -> str:
-    return f"{c.path}\n{c.symbol or ''}\n{c.content}"
+    return f"{c.path}\n{c.symbol or ''}\n{c.content}"[:EMBED_CHARS]
 
 
 def store_chunks(conn, repo_id, chunks, strategy, progress, lo=30, hi=95) -> None:

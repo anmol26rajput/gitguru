@@ -64,3 +64,12 @@ def test_source_key():
     assert source_key("https://github.com/psf/requests/tree/main") == ("github", "https://github.com/psf/requests")
     kind, path = source_key(".")
     assert kind == "local" and path.startswith("/")
+
+
+def test_embed_input_is_truncated_to_bound_memory():
+    from gitguru.chunk import Chunk
+    from gitguru.index import EMBED_CHARS, _embed_input
+    big = Chunk("a.py", 1, 120, "python", "big", "x = 1\n" * 2000)
+    text = _embed_input(big)
+    assert len(text) <= EMBED_CHARS
+    assert text.startswith("a.py\nbig\nx = 1")

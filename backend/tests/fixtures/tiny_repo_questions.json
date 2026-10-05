@@ -1,0 +1,9 @@
+[
+  {"question": "How are passwords hashed?", "gold_path": "auth.py", "gold_start": 8, "gold_end": 10},
+  {"question": "How do we check that a user's credentials are correct?", "gold_path": "auth.py", "gold_start": 13, "gold_end": 18},
+  {"question": "Where are login sessions stored and revoked?", "gold_path": "auth.py", "gold_start": 21, "gold_end": 33},
+  {"question": "How long do we wait between retries?", "gold_path": "retry.py", "gold_start": 5, "gold_end": 8},
+  {"question": "What happens when a call keeps failing with a connection error?", "gold_path": "retry.py", "gold_start": 11, "gold_end": 19},
+  {"question": "Which middleware rejects requests without a token?", "gold_path": "server.js", "gold_start": 4, "gold_end": 9},
+  {"question": "How is a title converted into a URL slug?", "gold_path": "utils/strings.go", "gold_start": 5, "gold_end": 8}
+]

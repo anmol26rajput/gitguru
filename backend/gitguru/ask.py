@@ -8,6 +8,9 @@ from gitguru.search import Hit, retrieve
 MAX_SOURCES = 6
 HISTORY_MESSAGES = 6  # last 3 turns (user + assistant)
 NOT_FOUND = "I couldn't find that in this repo."
+# Cross-encoder score below which we refuse instead of guessing.
+# Tuned with `gitguru eval <repo> --tune` (Task 15); see INTERVIEW-GUIDE "Numbers to know".
+RERANK_MIN_SCORE = -5.0
 
 SYSTEM = """You are GitGuru, an expert guide to the codebase "{title}".
 Answer ONLY using the numbered sources below. Cite every claim like [2].
@@ -57,7 +60,7 @@ def answer(conn, repo_id, question, history=()) -> Iterator[dict]:
     previous = next((m["content"] for m in reversed(list(history)) if m["role"] == "user"), "")
     query = f"{question} {previous}".strip()
     hits = retrieve(conn, repo_id, query, k=MAX_SOURCES)
-    if not hits:
+    if not hits or hits[0].score < RERANK_MIN_SCORE:
         yield {"event": "sources", "data": []}
         yield {"event": "token", "data": NOT_FOUND}
         yield {"event": "done", "data": {"provider": None, "cited": []}}

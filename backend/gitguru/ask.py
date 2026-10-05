@@ -33,6 +33,21 @@ def parse_citations(text: str, n_sources: int) -> list[int]:
     return sorted({int(n) for n in re.findall(r"\[(\d+)\]", text) if 1 <= int(n) <= n_sources})
 
 
+def _plain_citations(tokens: Iterator[str]) -> Iterator[str]:
+    """Rewrite gpt-oss style 【5†L684-L743】 to [5], holding back a marker split across tokens."""
+    buf = ""
+    for token in tokens:
+        buf = re.sub(r"【(\d+)[^】]*】", r"[\1]", buf + token)
+        cut = buf.rfind("【")
+        if cut == -1 or "】" in buf[cut:]:
+            cut = len(buf)
+        if cut:
+            yield buf[:cut]
+        buf = buf[cut:]
+    if buf:
+        yield buf
+
+
 def _source(i: int, h: Hit) -> dict:
     return {"n": i, "path": h.path, "start_line": h.start_line, "end_line": h.end_line, "symbol": h.symbol}
 
@@ -51,7 +66,7 @@ def answer(conn, repo_id, question, history=()) -> Iterator[dict]:
     text = ""
     try:
         provider, tokens = stream_chat(build_messages(title, hits, question, history))
-        for token in tokens:
+        for token in _plain_citations(tokens):
             text += token
             yield {"event": "token", "data": token}
     except Exception as e:

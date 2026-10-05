@@ -9,6 +9,11 @@ def test_parse_citations_keeps_valid_unique_sorted():
     assert parse_citations("See [2] and [1], also [2] and [9] [0]", 6) == [1, 2]
 
 
+def test_fancy_citations_become_plain_even_when_split_across_tokens():
+    tokens = ["Uses Retry【5", "†L684-L7", "43】 and 【2†L1】.", " Unclosed 【"]
+    assert "".join(ask._plain_citations(tokens)) == "Uses Retry[5] and [2]. Unclosed 【"
+
+
 def test_build_messages_numbers_sources_and_keeps_last_three_turns():
     hit = Hit(1, "auth.py", 8, 10, "hash_password", "def hash_password(): ...", 0.9)
     history = [{"role": "user", "content": f"q{i}"} for i in range(10)]

@@ -81,8 +81,9 @@ def test_all_providers_busy_becomes_error_event(conn, monkeypatch):
 
 def test_weak_retrieval_answers_not_found_without_llm(conn, monkeypatch):
     repo_id = index_source(conn, str(FIXTURE_REPO))
-    weak = Hit(1, "auth.py", 8, 10, "hash_password", "x", ask.RERANK_MIN_SCORE - 1)
+    weak = Hit(1, "auth.py", 8, 10, "hash_password", "x", 0.9)
     monkeypatch.setattr(ask, "retrieve", lambda *a, **k: [weak])
+    monkeypatch.setattr(ask, "rerank", lambda q, docs: [ask.RERANK_MIN_SCORE - 1])
     monkeypatch.setattr(ask, "stream_chat", lambda m: (_ for _ in ()).throw(AssertionError("LLM called")))
     events = list(answer(conn, repo_id, "How does it connect to Kafka?"))
     assert events[0] == {"event": "sources", "data": []}

@@ -54,8 +54,9 @@ def keyword_search(conn, repo_id, question, strategy="ast", limit=CANDIDATES) ->
     q = keyword_query(question)
     if not q:
         return []
+    # Normalization 2 divides by chunk length; without it long test-file chunks won 41/50 top spots on gin (D9).
     rows = conn.execute(
-        f"SELECT {COLS}, ts_rank_cd(tsv, q) FROM chunks, to_tsquery('simple', %s) q"
+        f"SELECT {COLS}, ts_rank_cd(tsv, q, 2) FROM chunks, to_tsquery('simple', %s) q"
         " WHERE repo_id = %s AND strategy = %s AND tsv @@ q ORDER BY 7 DESC LIMIT %s",
         (q, repo_id, strategy, limit),
     ).fetchall()

@@ -24,3 +24,24 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Code viewer (Shiki output): grid lines so the highlight spans the full width */
+.viewer pre {
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0.75rem 0;
+}
+.viewer code {
+  display: grid;
+  width: max-content;
+  min-width: 100%;
+}
+.viewer .line {
+  padding: 0 0.75rem;
+}
+.viewer .line.hl {
+  background: rgba(250, 204, 21, 0.22);
+  box-shadow: inset 3px 0 0 #facc15;
+}

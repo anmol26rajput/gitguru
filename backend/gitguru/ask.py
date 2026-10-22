@@ -3,14 +3,16 @@ import re
 from collections.abc import Iterator
 
 from gitguru.llm import stream_chat
+from gitguru.embed import rerank
 from gitguru.search import Hit, retrieve
 
 MAX_SOURCES = 6
 HISTORY_MESSAGES = 6  # last 3 turns (user + assistant)
 NOT_FOUND = "I couldn't find that in this repo."
-# Cross-encoder score below which we refuse instead of guessing.
-# Tuned with `gitguru eval <repo> --tune` (Task 15); see INTERVIEW-GUIDE "Numbers to know".
-RERANK_MIN_SCORE = -5.0
+# Sources come from vector search (best Hit@5 in the M2 eval, D41). The cross-encoder only scores those
+# few hits to decide "not found": below this best score we refuse instead of guessing.
+# Tuned with `gitguru eval <repo> --tune`; see INTERVIEW-GUIDE "Numbers to know".
+RERANK_MIN_SCORE = -6.3  # lowest suggestion: requests -5.08, express -6.28, gin -6.09 (Oct 20, vector + gate)
 
 SYSTEM = """You are GitGuru, an expert guide to the codebase "{title}".
 Answer ONLY using the numbered sources below. Cite every claim like [2].
@@ -55,12 +57,17 @@ def _source(i: int, h: Hit) -> dict:
     return {"n": i, "path": h.path, "start_line": h.start_line, "end_line": h.end_line, "symbol": h.symbol}
 
 
+def relevance(query: str, hits: list[Hit]) -> float:
+    """Best cross-encoder score among the hits: how well the repo can answer at all."""
+    return max(rerank(query, [f"{h.path}\n{h.content}" for h in hits]), default=float("-inf"))
+
+
 def answer(conn, repo_id, question, history=()) -> Iterator[dict]:
     title = conn.execute("SELECT title FROM repos WHERE id = %s", (repo_id,)).fetchone()[0]
     previous = next((m["content"] for m in reversed(list(history)) if m["role"] == "user"), "")
     query = f"{question} {previous}".strip()
-    hits = retrieve(conn, repo_id, query, k=MAX_SOURCES)
-    if not hits or hits[0].score < RERANK_MIN_SCORE:
+    hits = retrieve(conn, repo_id, query, mode="vector", k=MAX_SOURCES)
+    if relevance(query, hits) < RERANK_MIN_SCORE:
         yield {"event": "sources", "data": []}
         yield {"event": "token", "data": NOT_FOUND}
         yield {"event": "done", "data": {"provider": None, "cited": []}}

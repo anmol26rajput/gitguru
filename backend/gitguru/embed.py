@@ -19,7 +19,9 @@ def _reranker():
 
 
 def embed_texts(texts: list[str]) -> list[np.ndarray]:
-    return list(_embedder().embed(texts, batch_size=32))
+    # Batches pad to the longest chunk; 32 x 4000-char chunks peaked at 11.9 GB and froze the Mac.
+    # batch_size=2 peaks at 3.4 GB and is faster (no swap). See DECISIONS D40.
+    return list(_embedder().embed(texts, batch_size=2))
 
 
 def embed_query(text: str) -> np.ndarray:

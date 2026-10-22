@@ -12,7 +12,6 @@ from gitguru import config
 BASE_URLS = {
     "groq": "https://api.groq.com/openai/v1",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
-    "ollama": "http://localhost:11434/v1",
 }
 
 
@@ -26,8 +25,6 @@ def _settings(name: str) -> tuple[str, str] | None:
         return config.GROQ_API_KEY, config.GROQ_MODEL
     if name == "gemini" and config.GEMINI_API_KEY:
         return config.GEMINI_API_KEY, config.GEMINI_MODEL
-    if name == "ollama":
-        return "ollama", config.OLLAMA_MODEL
     return None
 
 

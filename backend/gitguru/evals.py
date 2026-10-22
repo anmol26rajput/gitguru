@@ -57,6 +57,13 @@ def add_questions(conn, repo_id, questions: list[EvalQuestion], origin: str) -> 
     )
 
 
+def replace_manual_questions(conn, repo_id, questions: list[EvalQuestion]) -> None:
+    """The given list is the source of truth for a repo's manual questions: replace, never duplicate."""
+    with conn.transaction():
+        conn.execute("DELETE FROM eval_questions WHERE repo_id = %s AND origin = 'manual'", (repo_id,))
+        add_questions(conn, repo_id, questions, "manual")
+
+
 def _questions(conn, repo_id) -> list[EvalQuestion]:
     rows = conn.execute(
         "SELECT question, gold_path, gold_start, gold_end FROM eval_questions WHERE repo_id = %s ORDER BY id",
@@ -134,9 +141,10 @@ def run_eval(conn, repo_id, progress: Progress = _noop) -> list[dict]:
 
 
 def suggest_threshold(conn, repo_id) -> dict:
+    from gitguru.ask import MAX_SOURCES, relevance  # same gate as ask.answer
+
     def top(question: str) -> float:
-        hits = retrieve(conn, repo_id, question, mode="hybrid_rerank", k=1)
-        return hits[0].score if hits else float("-inf")
+        return relevance(question, retrieve(conn, repo_id, question, mode="vector", k=MAX_SOURCES))
 
     answerable = statistics.median(top(q.question) for q in _questions(conn, repo_id))
     off_topic = statistics.median(top(q) for q in OFF_TOPIC)

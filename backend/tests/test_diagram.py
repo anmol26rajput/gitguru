@@ -1,6 +1,6 @@
 from collections import Counter
 
-from gitguru.diagram import collapse, extract_imports, file_edges, resolve, to_mermaid
+from gitguru.diagram import collapse, extract_imports, file_edges, is_noise, resolve, to_mermaid
 
 
 def test_extract_imports_per_language():
@@ -58,6 +58,12 @@ def test_mermaid_escapes_hostile_names():
     assert all(line.split("[")[0].strip().startswith("n") for line in m.splitlines()[1:] if "[" in line)
 
 
+def test_mermaid_labels_are_short_unless_tails_collide():
+    m = to_mermaid(Counter({("a/x/utils.py", "b/x/utils.py"): 1, ("a/x/utils.py", "pkg/mod/core.py"): 1}))
+    assert '"a/x/utils.py"' in m and '"b/x/utils.py"' in m  # colliding tails keep the full path
+    assert '"mod/core.py"' in m and "pkg/mod" not in m
+
+
 def test_no_edges_gives_empty_string():
     assert to_mermaid(Counter()) == ""
 
@@ -87,3 +93,31 @@ def test_file_edges_fast_at_5000_files():
     t = time.perf_counter()
     assert not file_edges(files, None)
     assert time.perf_counter() - t < 2
+
+
+def test_layout_is_top_down_above_eight_nodes():
+    chain = lambda n: Counter({(f"m{i:02}", f"m{i + 1:02}"): 1 for i in range(n - 1)})
+    assert to_mermaid(chain(8)).startswith("graph LR")
+    big = to_mermaid(chain(9))
+    assert big.startswith("graph TD") and big.count("-->") == 8 and 'n0["m00"]' in big
+
+
+def test_tests_docs_examples_and_ci_are_left_out_of_the_graph():
+    for p in ["tests/t.py", "src/tests/x.py", "test/a.go", "pkg/test_a.py", "pkg/a_test.go", "web/b.spec.ts",
+              "web/b.test.tsx", "conftest.py", "docs/conf.py", "doc/x.py", "examples/demo.py", "example/m.go",
+              ".github/scripts/x.py"]:
+        assert is_noise(p), p
+    for p in ["src/requests/api.py", "pkg/testing.py", "pkg/contest.py", "latest/a.py", "src/attest_util.py"]:
+        assert not is_noise(p), p
+    files = {"pkg/a.py": "from . import b\n", "pkg/b.py": "", "tests/test_a.py": "from pkg import a\n",
+             "docs/conf.py": "import pkg.b\n", "pkg/a_test.py": "from . import a\n"}
+    assert file_edges(files, None) == Counter({("pkg/a.py", "pkg/b.py"): 1})
+
+
+def test_collapse_keeps_the_40_heaviest_edges_with_a_stable_tie_break():
+    edges = Counter({(f"f{i:02}.py", f"f{j:02}.py"): 1 for i in range(12) for j in range(12) if i != j})
+    edges[("f11.py", "f00.py")] = 9
+    out = collapse(edges)
+    assert len(out) == 40 and out[("f11.py", "f00.py")] == 9
+    assert out == collapse(Counter(dict(reversed(list(edges.items())))))  # same result whatever the input order
+    assert ("f00.py", "f01.py") in out and ("f10.py", "f09.py") not in out  # ties go by name

@@ -1,3 +1,7 @@
+import json
+
+import psycopg
+
 from gitguru import jobs
 from gitguru.db import make_pool
 from gitguru.ingest import IngestError
@@ -86,3 +90,49 @@ def test_index_failure_marks_job_and_repo_failed_and_ends_stream(client, monkeyp
     body = client.post("/repos", json={"source": URL}).json()
     assert events(client, body["job_id"]) == [{"event": "error", "data": {"message": "repo not found"}}]
     assert client.get(f"/repos/{body['repo_id']}").json()["status"] == "failed"
+
+
+def _repo(conn, title, status="ready"):
+    return conn.execute("INSERT INTO repos (kind, source, title, status) VALUES ('github', %s, %s, %s) RETURNING id",
+                        (f"https://github.com/{title}", title, status)).fetchone()[0]
+
+
+def _overview(conn, repo_id, summary):
+    content = json.dumps({"summary": summary, "how_it_works": [], "parts": [], "glossary": []})
+    conn.execute("INSERT INTO repo_artifacts (repo_id, kind, content) VALUES (%s, 'overview', %s)", (repo_id, content))
+
+
+def test_list_repos_summary_present_absent_long_and_invalid(client, conn):
+    ok, none, long_, bad = (_repo(conn, t) for t in ("o/ok", "o/none", "o/long", "o/bad"))
+    _overview(conn, ok, "Tiny auth for web apps. It also does more. And more.")
+    _overview(conn, long_, "word " * 60 + "ends here. Second.")
+    conn.execute("INSERT INTO repo_artifacts (repo_id, kind, content) VALUES (%s, 'overview', '{\"nope\": 1}')", (bad,))
+    by_id = {r["id"]: r for r in client.get("/repos").json()}
+    assert by_id[ok]["summary"] == "Tiny auth for web apps."
+    assert by_id[none]["summary"] is None and by_id[bad]["summary"] is None
+    s = by_id[long_]["summary"]
+    assert len(s) <= 120 and s.endswith("…") and s[:-1].rstrip().split(" ")[-1] == "word"
+
+
+def test_list_repos_progress_and_message_from_latest_index_job(client, conn):
+    failed, fresh, indexing = _repo(conn, "o/failed", "failed"), _repo(conn, "o/fresh", "ready"), _repo(conn, "o/busy", "indexing")
+    for rid, kind, status, pct, msg in [(failed, "index", "failed", 40, "clone failed: boom"),
+                                        (indexing, "index", "failed", 10, "old attempt"),  # older, superseded
+                                        (indexing, "index", "running", 55, "embedding"),
+                                        (indexing, "eval", "running", 99, "eval is not an index job")]:
+        conn.execute("INSERT INTO jobs (repo_id, kind, status, progress, message) VALUES (%s, %s, %s, %s, %s)",
+                     (rid, kind, status, pct, msg))
+    by_id = {r["id"]: r for r in client.get("/repos").json()}
+    assert (by_id[failed]["progress"], by_id[failed]["message"]) == (40, "clone failed: boom")
+    assert (by_id[indexing]["progress"], by_id[indexing]["message"]) == (55, "embedding")
+    assert by_id[fresh]["progress"] is None and by_id[fresh]["message"] is None
+
+
+def test_list_repos_is_one_query(client, conn, monkeypatch):
+    for i in range(5):
+        _overview(conn, _repo(conn, f"o/r{i}"), "Hello there.")
+    seen = []
+    orig = psycopg.Connection.execute
+    monkeypatch.setattr(psycopg.Connection, "execute", lambda self, q, *a, **k: seen.append(str(q)) or orig(self, q, *a, **k))
+    assert len(client.get("/repos").json()) == 5
+    assert len([q for q in seen if q]) == 1  # pool housekeeping runs an empty statement

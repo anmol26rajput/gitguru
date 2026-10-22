@@ -3,48 +3,40 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type Repo } from "@/lib/api";
+import ErrorBox, { fail, type Failure } from "@/components/ErrorBox";
+import { Key } from "@/components/ui";
+import { api, type Repo } from "@/lib/api";
 import { readSSE } from "@/lib/sse";
 
-const BADGE: Record<Repo["status"], string> = {
-  pending: "bg-gray-100 text-gray-700",
-  indexing: "bg-blue-100 text-blue-800",
-  ready: "bg-green-100 text-green-800",
-  failed: "bg-red-100 text-red-800",
-};
+// The repo being added right now: its card shows this SSE progress instead of the list's snapshot.
+type Live = { repoId: number | null; pct: number; message: string };
 
-type Failure = { status?: number; message: string };
-type Progress = { pct: number; message: string };
-
+// Home: hero (title, URL box, tilted code window) above the repos as stacked sheet cards.
 export default function RepoList() {
   const source = useSearchParams().get("source") ?? "";
   const [repos, setRepos] = useState<Repo[] | null>(null);
   const [url, setUrl] = useState(source);
-  const [progress, setProgress] = useState<Progress | null>(null);
+  const [live, setLive] = useState<Live | null>(null);
   const [error, setError] = useState<Failure | null>(null);
   const autoStarted = useRef(false);
 
-  const fail = useCallback(
-    (e: unknown) =>
-      setError(e instanceof ApiError ? { status: e.status, message: e.message } : { message: String(e) }),
-    [],
-  );
-
   const load = useCallback(
-    () => api("/repos").then((r) => r.json()).then(setRepos).catch(fail),
-    [fail],
+    () => api("/repos").then((r) => r.json()).then(setRepos).catch((e) => setError(fail(e))),
+    [],
   );
 
   const add = useCallback(async (src: string) => {
     setError(null);
-    setProgress({ pct: 0, message: "Starting..." });
+    setLive({ repoId: null, pct: 0, message: "Starting…" });
     let outcome: "done" | "error" | null = null;
     try {
       const post = await api("/repos", { method: "POST", body: JSON.stringify({ source: src }) });
-      const { job_id } = await post.json();
+      const { repo_id, job_id } = await post.json();
+      setLive({ repoId: repo_id, pct: 0, message: "Queued" });
+      void load(); // the new card appears now and follows the live progress
       await readSSE(await api(`/jobs/${job_id}/events`), ({ event, data }) => {
         const d = data as { pct?: number; message?: string };
-        if (event === "progress") setProgress({ pct: d.pct ?? 0, message: d.message ?? "" });
+        if (event === "progress") setLive({ repoId: repo_id, pct: d.pct ?? 0, message: d.message ?? "" });
         else if (event === "done") outcome = "done";
         else if (event === "error") {
           outcome = "error";
@@ -54,12 +46,12 @@ export default function RepoList() {
       if (outcome === "done") setUrl("");
       else if (!outcome) setError({ message: "Connection closed before indexing finished." });
     } catch (e) {
-      fail(e);
+      setError(fail(e));
     } finally {
-      setProgress(null);
       await load();
+      setLive(null);
     }
-  }, [load, fail]);
+  }, [load]);
 
   useEffect(() => {
     void load();
@@ -70,74 +62,142 @@ export default function RepoList() {
     }
   }, [load, add, source]);
 
-  const busy = progress !== null;
+  const busy = live !== null;
 
   return (
-    <main className="mx-auto w-full max-w-2xl space-y-6 p-6">
-      <h1 className="text-2xl font-bold">Repos</h1>
-
-      {error && (
-        <div role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">
-          {error.message}{" "}
-          {error.status === 401 && (
-            <Link href="/settings" className="font-medium underline">Open Settings</Link>
-          )}
+    <main className="mx-auto w-full max-w-5xl px-6 pb-20">
+      <section className="grid items-center gap-10 pt-8 pb-12 min-[900px]:grid-cols-[1.05fr_1fr] min-[900px]:gap-14 min-[900px]:pt-14 min-[900px]:pb-16">
+        <div>
+          <h1 className="text-[30px] leading-[1.15] font-[750] tracking-[-0.025em]">
+            Understand any <br />
+            codebase.
+          </h1>
+          <p className="mt-2.5 mb-5 text-[15px] text-muted">
+            Paste a GitHub link and ask anything, <br className="max-sm:hidden" />
+            in simple words or in full detail.
+          </p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (url.trim() && !busy) void add(url.trim());
+            }}
+            className="flex items-center gap-2 rounded-card border border-border bg-surface py-1.5 pr-1.5 pl-3.5 shadow-[var(--shadow-ghost)]"
+          >
+            <input
+              aria-label="GitHub URL"
+              placeholder="github.com/owner/repo"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              required
+              spellCheck={false}
+              autoCapitalize="off"
+              className="min-w-0 flex-1 rounded-md bg-transparent py-1.5 font-mono text-[13px] placeholder:text-muted"
+            />
+            <Key type="submit" disabled={busy}>Explore</Key>
+          </form>
+          {error && <div className="mt-4"><ErrorBox error={error} /></div>}
         </div>
-      )}
+        <CodeWindow />
+      </section>
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (url.trim() && !busy) void add(url.trim());
-        }}
-        className="flex gap-2"
-      >
-        <input
-          aria-label="GitHub URL"
-          placeholder="https://github.com/owner/repo"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm"
-        />
-        <button
-          type="submit"
-          disabled={busy || !url.trim()}
-          className="rounded bg-foreground px-4 py-2 text-sm text-background disabled:opacity-50"
-        >
-          Add repo
-        </button>
-      </form>
-
-      {progress && (
-        <div className="space-y-1" role="status">
-          <div className="h-2 overflow-hidden rounded bg-foreground/10">
-            <div className="h-full bg-foreground transition-all" style={{ width: `${Math.min(100, progress.pct)}%` }} />
-          </div>
-          <p className="text-sm text-gray-600">{progress.pct}% - {progress.message}</p>
-        </div>
-      )}
-
-      {repos === null ? (
-        !error && <p className="text-sm text-gray-500">Loading...</p>
-      ) : repos.length === 0 ? (
-        <p className="text-sm text-gray-500">No repos yet. Add a GitHub URL above.</p>
-      ) : (
-        <ul className="divide-y divide-gray-200 rounded border border-gray-200">
-          {repos.map((r) => (
-            <li key={r.id} className="flex items-center gap-3 p-3 text-sm">
-              {r.status === "ready" ? (
-                <Link href={`/r/${r.id}`} className="font-medium hover:underline">{r.title}</Link>
-              ) : (
-                <span className="font-medium">{r.title}</span>
-              )}
-              <span className={`rounded px-2 py-0.5 text-xs ${BADGE[r.status]}`}>{r.status}</span>
-              {typeof r.stats.chunks === "number" && (
-                <span className="ml-auto text-gray-500">{r.stats.chunks} chunks</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* On a failed load the error box above says it all: no empty "Your repos" label. */}
+      {(repos !== null || !error) && <section aria-labelledby="repos-heading">
+        <h2 id="repos-heading" className="section-label mb-4">Your repos</h2>
+        {repos === null ? (
+          <p className="text-muted">Loading…</p>
+        ) : repos.length === 0 ? (
+          <p className="text-muted">No repos yet. Paste a GitHub link above to add the first one.</p>
+        ) : (
+          // gap-y leaves room for each sheet's under-sheet, which hangs ~7px below the card
+          <ul className="grid grid-cols-1 gap-x-4 gap-y-6 min-[600px]:grid-cols-2 min-[900px]:grid-cols-3">
+            {repos.map((r) => (
+              <li key={r.id} className="grid grid-cols-1">
+                <RepoCard repo={r} live={live?.repoId === r.id ? live : null} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>}
     </main>
+  );
+}
+
+function RepoCard({ repo, live }: { repo: Repo; live: Live | null }) {
+  const status = live ? "indexing" : repo.status;
+  const files = typeof repo.stats.files === "number" ? `${repo.stats.files} ${repo.stats.files === 1 ? "file" : "files"}` : null;
+  const name = <span className="min-w-0 truncate font-mono font-[650]">{repo.title}</span>;
+
+  if (status === "ready") {
+    return (
+      <Link href={`/r/${repo.id}`} className="sheet">
+        <span className="flex items-baseline gap-3">
+          {name}
+          <span className="ml-auto shrink-0 font-mono text-xs text-accent-text">
+            <span aria-hidden="true">●</span> ready
+          </span>
+        </span>
+        <span className="mt-1 block text-[13px] text-muted">{repo.summary || files}</span>
+      </Link>
+    );
+  }
+
+  if (status === "failed") {
+    return (
+      <div className="sheet">
+        <div className="flex items-baseline gap-3">
+          {name}
+          <span className="ml-auto shrink-0 font-mono text-xs text-danger-text">failed</span>
+        </div>
+        <p className="mt-1 text-[13px] text-danger-text">{repo.message || "Indexing failed."}</p>
+      </div>
+    );
+  }
+
+  // pending / indexing
+  const pct = Math.max(0, Math.min(100, live ? live.pct : (repo.progress ?? 0)));
+  const message = live ? live.message : repo.message;
+  return (
+    <div className="sheet">
+      <div className="flex items-baseline gap-3">
+        {name}
+        <span className="ml-auto shrink-0 font-mono text-xs text-muted tabular-nums">{pct}%</span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={`Indexing ${repo.title}`}
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        className="mt-2.5 h-1 rounded-full bg-border"
+      >
+        <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${pct}%` }} />
+      </div>
+      <p className="mt-2 truncate text-[13px] text-muted">{message || "Waiting to start…"}</p>
+    </div>
+  );
+}
+
+// Decorative: a hand-written requests snippet, tilted in 3D. Hidden below 900px.
+function CodeWindow() {
+  return (
+    <div aria-hidden="true" className="tilt-stage hidden min-[900px]:block">
+      <div className="tilt-window">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="size-2.5 rounded-full bg-[var(--win-border)]" />
+          <span className="size-2.5 rounded-full bg-[var(--win-border)]" />
+          <span className="size-2.5 rounded-full bg-[var(--win-border)]" />
+          <span className="ml-1.5 font-mono text-[11px] text-[var(--win-muted)]">sessions.py · 590</span>
+        </div>
+        <pre>
+          <span className="tok-k">def</span> <span className="tok-f">send</span>(self, request):{"\n"}
+          {"    "}adapter = self.get_adapter(request.url){"\n"}
+          <span className="tilt-hl">{"    "}r = adapter.send(request)</span>
+          {"    "}<span className="tok-k">return</span> r
+        </pre>
+        <p className="mt-2.5 border-t border-[var(--win-rule)] pt-2 text-[13px]">
+          ↳ “This is where your request actually leaves the computer.”
+        </p>
+      </div>
+    </div>
   );
 }

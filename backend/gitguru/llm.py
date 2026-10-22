@@ -1,4 +1,5 @@
 """One OpenAI-compatible client for every provider, with a fallback chain."""
+import logging
 import re
 import time
 from collections.abc import Iterator
@@ -13,6 +14,9 @@ BASE_URLS = {
     "groq": "https://api.groq.com/openai/v1",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
 }
+
+
+log = logging.getLogger(__name__)
 
 
 class LLMError(Exception):
@@ -62,7 +66,9 @@ def stream_chat(messages: list[dict]) -> tuple[str, Iterator[str]]:
 
 
 def complete(messages: list[dict]) -> str:
-    return "".join(stream_chat(messages)[1])
+    name, tokens = stream_chat(messages)
+    log.info("llm answered via %s", name)  # makes a silent Groq -> Gemini fallback visible
+    return "".join(tokens)
 
 
 def _json_text(reply: str) -> str:

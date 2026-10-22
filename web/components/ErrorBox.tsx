@@ -8,9 +8,9 @@ export const fail = (e: unknown): Failure =>
 
 export default function ErrorBox({ error }: { error: Failure }) {
   return (
-    <div role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">
+    <div role="alert" className="rounded-key border border-danger-border bg-danger-soft px-3.5 py-3 text-danger-text">
       {error.message}{" "}
-      {error.status === 401 && <Link href="/settings" className="font-medium underline">Open Settings</Link>}
+      {error.status === 401 && <Link href="/settings" className="font-semibold underline underline-offset-2">Open Settings</Link>}
     </div>
   );
 }

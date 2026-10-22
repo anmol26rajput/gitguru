@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { countRuns } from "@/lib/evalRuns";
 import { readSSE } from "@/lib/sse";
 import ErrorBox, { fail, type Failure } from "./ErrorBox";
+import { Key, Sheet } from "./ui";
 
 type Run = {
   id: number;
@@ -41,7 +42,7 @@ export default function EvalDashboard({ repoId }: { repoId: number }) {
 
   async function start() {
     setError(null);
-    setProgress({ pct: 0, message: "Starting..." });
+    setProgress({ pct: 0, message: "Starting…" });
     let outcome: "done" | "error" | null = null;
     try {
       const post = await api(`/repos/${repoId}/evals`, { method: "POST", body: "{}" });
@@ -75,49 +76,67 @@ export default function EvalDashboard({ repoId }: { repoId: number }) {
     (b, r) => (!b || r.hit_at_5 > b.hit_at_5 || (r.hit_at_5 === b.hit_at_5 && r.mrr_at_10 > b.mrr_at_10) ? r : b),
     null,
   );
+  // The chat searches by meaning (vector) over whole functions and classes (ast): the headline reports that setting.
+  const chat = rows.find((r) => r.strategy === "ast" && r.mode === "vector");
   const total = countRuns(runs ?? []);
   const busy = progress !== null;
 
   return (
-    <main className="mx-auto w-full min-w-0 flex-1 space-y-6 p-6 md:max-w-4xl">
+    <main className="mx-auto w-full max-w-[760px] min-w-0 flex-1 space-y-6 px-6 pt-6 pb-12">
       {error && <ErrorBox error={error} />}
 
+      {/* The verdict first, on a sheet card. */}
+      <Sheet>
+        <h2 className="section-label">Latest result</h2>
+        {runs === null ? (
+          <p className="mt-2 text-muted">{error ? "Couldn't load the results." : "Loading…"}</p>
+        ) : runs.length === 0 ? (
+          <p className="mt-2 text-muted">No eval runs yet.</p>
+        ) : (
+          <>
+            {chat && (
+              <p className="mt-2 text-[17px] leading-snug font-[650]">
+                With the search the chat uses, GitGuru found the right code for {Math.round(chat.hit_at_5 * chat.n)} of{" "}
+                {chat.n} test questions.
+              </p>
+            )}
+            <p className="mt-2 text-[13px] text-muted">
+              Last run {new Date(runs[0].created_at).toLocaleString()} · {runs[0].n} questions · {total}{" "}
+              {total === 1 ? "run" : "runs"} in total
+            </p>
+          </>
+        )}
+      </Sheet>
+
+      <p className="leading-relaxed">
+        This page checks how good GitGuru is at finding the right code. We ask it test questions whose answers we
+        already know, and count how often the right code appears in its top 5 results. You don&apos;t need this to
+        use GitGuru — it&apos;s proof that answers come from real code.
+      </p>
+
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          onClick={() => void start()}
-          disabled={busy}
-          className="rounded bg-foreground px-4 py-2 text-sm text-background disabled:opacity-50"
-        >
+        <Key onClick={() => void start()} disabled={busy}>
           Run eval
-        </button>
-        <p className="text-sm text-foreground/70">
-          Generates ~50 questions with the LLM the first time; takes a few minutes.
-        </p>
+        </Key>
+        <p className="text-muted">Generates ~50 questions with the LLM the first time; takes a few minutes.</p>
       </div>
 
       {progress && (
         <div className="space-y-1" role="status">
-          <div className="h-2 overflow-hidden rounded bg-foreground/10">
-            <div className="h-full bg-foreground transition-all" style={{ width: `${Math.min(100, progress.pct)}%` }} />
+          <div className="h-1.5 rounded-full bg-border">
+            <div className="h-full rounded-full bg-accent transition-[width]" style={{ width: `${Math.min(100, progress.pct)}%` }} />
           </div>
-          <p className="text-sm text-foreground/70">{progress.pct}% - {progress.message}</p>
+          <p className="text-muted">{progress.pct}% - {progress.message}</p>
         </div>
       )}
 
-      {runs === null ? (
-        !error && <p className="text-sm text-foreground/70">Loading...</p>
-      ) : runs.length === 0 ? (
-        <p className="text-sm text-foreground/70">No eval runs yet.</p>
-      ) : (
-        <>
-          <p className="text-sm text-foreground/70">
-            Last run {new Date(runs[0].created_at).toLocaleString()} · {runs[0].n} questions · {total}{" "}
-            {total === 1 ? "run" : "runs"} in total
-          </p>
+      {runs && runs.length > 0 && (
+        <details className="space-y-3">
+          <summary className="cursor-pointer rounded-md font-medium">Show the detailed numbers</summary>
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
+            <table className="w-full text-left">
               <thead>
-                <tr className="border-b border-foreground/20">
+                <tr className="border-b border-border">
                   <th className="p-2 font-medium">Strategy</th>
                   <th className="p-2 font-medium">Mode</th>
                   <th className="p-2 font-medium">Hit@5</th>
@@ -125,18 +144,18 @@ export default function EvalDashboard({ repoId }: { repoId: number }) {
                   <th className="p-2 text-right font-medium">p50 ms</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="font-mono text-[13px]">
                 {rows.map((r) => (
-                  <tr key={r.id} className="border-b border-foreground/10">
+                  <tr key={r.id} className="border-b border-border">
                     <td className="p-2">{r.strategy}</td>
                     <td className="p-2">{r.mode}</td>
                     <td className="p-2">
                       <div className="flex items-center gap-2">
-                        <div className="h-2 w-24 overflow-hidden rounded bg-foreground/10" aria-hidden>
-                          <div className="h-full bg-foreground" style={{ width: `${Math.min(100, r.hit_at_5 * 100)}%` }} />
+                        <div className="h-1.5 w-24 rounded-full bg-border" aria-hidden>
+                          <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, r.hit_at_5 * 100)}%` }} />
                         </div>
                         <span>{r.hit_at_5.toFixed(2)}</span>
-                        {r === best && <span className="rounded border border-foreground/40 px-1.5 text-xs font-medium">best</span>}
+                        {r === best && <span className="rounded-full bg-accent-soft px-1.5 font-sans text-xs font-[650] text-accent-text">best</span>}
                       </div>
                     </td>
                     <td className="p-2">{r.mrr_at_10.toFixed(2)}</td>
@@ -146,7 +165,17 @@ export default function EvalDashboard({ repoId }: { repoId: number }) {
               </tbody>
             </table>
           </div>
-        </>
+          <div className="space-y-1">
+            <p className="font-medium">What these columns mean</p>
+            <ul className="ml-5 list-disc space-y-1 text-muted">
+              <li><b>Hit@5</b>: how often the right code was in the top 5 results (1.00 means every time).</li>
+              <li><b>MRR@10</b>: how close to the top the right code was. Closer to 1.00 is better.</li>
+              <li><b>p50 ms</b>: the typical time to search, in thousandths of a second. Smaller is faster.</li>
+              <li><b>keyword</b>: matches exact words. <b>vector</b>: matches meaning. <b>hybrid</b>: both together. <b>rerank</b>: hybrid, then a second look to put the best result first.</li>
+              <li><b>AST</b>: the code was cut into pieces along its natural structure (functions, classes). <b>line</b>: cut into fixed blocks of lines.</li>
+            </ul>
+          </div>
+        </details>
       )}
     </main>
   );

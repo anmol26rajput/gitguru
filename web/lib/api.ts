@@ -6,6 +6,9 @@ export type Repo = {
   status: "pending" | "indexing" | "ready" | "failed";
   stats: Record<string, unknown>;
   last_used_at: string;
+  summary: string | null; // first sentence of the cached overview; "" or null = none yet
+  progress: number | null; // latest index job, 0-100
+  message: string | null;
 };
 export type Source = { n: number; path: string; start_line: number; end_line: number; symbol: string | null };
 export type Turn = { role: "user" | "assistant"; content: string };

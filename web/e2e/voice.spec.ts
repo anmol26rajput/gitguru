@@ -1,12 +1,23 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { saveSettings } from "./helpers";
 
+const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*" };
+
 type Utt = { text: string; onend: (() => void) | null };
-type VoiceWindow = Window & { __spoken: string[]; __endDelay: number; __utterances: Utt[]; __synthError?: string };
+type VoiceWindow = Window & {
+  __spoken: string[];
+  __endDelay: number;
+  __utterances: Utt[];
+  __synthError?: string;
+  __played: number;
+  __audio: object | null; // the FakeAudio that is playing right now, if any
+};
 
 // Stand-ins for the Web Speech API (headless Chromium has no microphone or voice), installed before the page loads.
 // Recognition "hears" a scripted sentence; synthesis records what it was asked to say.
+// POST /tts is refused (503) so these tests exercise the browser-voice fallback; the audio test overrides the route.
 async function installVoice(page: Page, recError?: string, synthError?: string) {
+  await page.route("**/tts", (route) => route.fulfill({ status: 503, headers: CORS, body: "no voice" }));
   await page.addInitScript(([err, synthErr]) => {
     const w = window as unknown as VoiceWindow & Record<string, unknown>;
     w.__spoken = [];
@@ -41,13 +52,14 @@ async function installVoice(page: Page, recError?: string, synthError?: string) 
     }
     w.SpeechSynthesisUtterance = Utterance;
 
-    // "<overlap>" is recorded when speak() starts while another utterance is still active: two voices at once.
+    // "<overlap>" is recorded when speak() starts while another utterance (or server audio) is still active: two
+    // voices at once.
     let active: { u: Utterance; timer: number } | null = null;
     Object.defineProperty(window, "speechSynthesis", {
       configurable: true,
       value: {
         speak(u: Utterance) {
-          if (active) w.__spoken.push("<overlap>");
+          if (active || w.__audio) w.__spoken.push("<overlap>");
           w.__spoken.push(u.text);
           w.__utterances.push(u);
           const timer = window.setTimeout(() => {
@@ -68,6 +80,39 @@ async function installVoice(page: Page, recError?: string, synthError?: string) 
   }, [recError, synthError] as const);
 }
 
+// The stub MP3 is not decodable (a real <audio> would fire `error`), so Audio is replaced by a player that records
+// play() and reports `ended` a moment later: the exact surface useVoice touches.
+async function installAudio(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as unknown as VoiceWindow;
+    w.__played = 0;
+    w.__audio = null;
+    class FakeAudio {
+      onended: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(public src: string) {}
+      play() {
+        w.__played++;
+        w.__audio = this;
+        setTimeout(() => {
+          if (w.__audio === this) w.__audio = null;
+          this.onended?.();
+        }, 30);
+        return Promise.resolve();
+      }
+      pause() {
+        if (w.__audio === this) w.__audio = null;
+      }
+      removeAttribute() {}
+    }
+    (window as unknown as { Audio: unknown }).Audio = FakeAudio;
+  });
+}
+
+// A tiny MP3 body for /tts (the CORS preflight gets these headers too).
+const MP3 = { status: 200, headers: { ...CORS, "content-type": "audio/mpeg" }, body: Buffer.from([0xff, 0xfb, 0x90, 0x00]) };
+
+const played = (page: Page) => page.evaluate(() => (window as unknown as VoiceWindow).__played);
 const spoken = (page: Page) => page.evaluate(() => (window as unknown as VoiceWindow).__spoken);
 const narrations = async (page: Page) => (await spoken(page)).filter((s) => s !== "<cancel>");
 
@@ -176,4 +221,90 @@ test("read aloud: a speech error puts the button back to Read aloud", async ({ p
   await page.getByRole("button", { name: "Read aloud" }).click();
   await expect.poll(async () => (await narrations(page)).length).toBe(1);
   await expect(page.getByRole("button", { name: "Read aloud" })).toBeVisible();
+});
+
+test("walkthrough: with the server voice, every narration plays as audio and the browser voice stays silent", async ({ page }) => {
+  await installVoice(page);
+  await installAudio(page);
+  await mockWalkthrough(page);
+  // Later routes win. The next step's narration is also prefetched, so a text may be posted twice.
+  const posted = new Set<string>();
+  await page.route("**/tts", (route) => {
+    if (route.request().method() === "POST") posted.add(route.request().postDataJSON().text);
+    return route.fulfill(MP3);
+  });
+  await openRepo(page, "Walkthrough");
+  await page.getByRole("button", { name: "Start walkthrough" }).click();
+  await expect(page.getByText(/Step 3 of 3 — tour finished/)).toBeVisible();
+  expect(posted).toEqual(new Set(STEPS.map((s) => s.narration)));
+  expect(await played(page)).toBe(STEPS.length);
+  expect(await narrations(page)).toEqual([]); // speechSynthesis.speak was never called
+  expect(await spoken(page)).not.toContain("<overlap>");
+});
+
+const step = (narration: string) => ({ path: "auth.py", start_line: 1, end_line: 10, narration });
+
+test("server voice: piece 1 plays as audio, piece 2's /tts fails, and the browser voice reads the rest exactly once", async ({ page }) => {
+  // The first piece is the first sentence or two (at most 150 chars), so audio starts soon; the rest is piece 2.
+  const piece1 = "First, the app reads the settings file and checks every value. Then it opens a connection to the database so later steps can store results.";
+  const rest = "After that, a worker picks up each job in turn and reports progress on the screen.";
+  await installVoice(page);
+  await installAudio(page);
+  await page.route("**/walkthrough", (route) => route.fulfill({ json: { steps: [step(`${piece1} ${rest}`)] } }));
+  await page.route("**/tts", (route) => {
+    const ok = route.request().method() !== "POST" || route.request().postDataJSON().text === piece1;
+    return route.fulfill(ok ? MP3 : { status: 503, headers: CORS, body: "no voice" });
+  });
+  await openRepo(page, "Walkthrough");
+  await page.getByRole("button", { name: "Start walkthrough" }).click();
+  await expect(page.getByText(/Step 1 of 1 — tour finished/)).toBeVisible();
+  expect(await played(page)).toBe(1);
+  expect(await narrations(page)).toEqual([rest]);
+  expect(await spoken(page)).not.toContain("<overlap>");
+});
+
+test("server voice: Next while /tts is still pending, then the late reply arrives: the old step never plays", async ({ page }) => {
+  await installVoice(page);
+  await installAudio(page);
+  await mockWalkthrough(page);
+  const held: Route[] = [];
+  let heldNow!: () => void;
+  const isHeld = new Promise<void>((resolve) => (heldNow = resolve));
+  await page.route("**/tts", (route) => {
+    const req = route.request();
+    if (req.method() === "POST" && req.postDataJSON().text === STEPS[0].narration) {
+      held.push(route); // step 1's voice never arrives in time
+      heldNow();
+      return;
+    }
+    return route.fulfill(MP3);
+  });
+  await openRepo(page, "Walkthrough");
+  await page.getByRole("button", { name: "Start walkthrough" }).click();
+  await isHeld;
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.getByText(/Step 3 of 3 — tour finished/)).toBeVisible();
+  for (const r of held) await r.fulfill(MP3).catch(() => {}); // the late reply (the page may have aborted it already)
+  await page.waitForTimeout(300);
+  expect(await played(page)).toBe(2); // steps 2 and 3 only
+  expect(await narrations(page)).toEqual([]);
+  expect(await spoken(page)).not.toContain("<overlap>");
+  await expect(page.getByText(/Step 3 of 3 — tour finished/)).toBeVisible();
+});
+
+test("browser voice: a long narration is read as several short utterances and still advances", async ({ page }) => {
+  // Chrome's Google voices stop after ~15 s and never fire `end`; short utterances keep each one well inside that.
+  const long = Array.from({ length: 6 }, (_, k) => `Part ${k + 1} of the flow hands its result to the next part, which checks it carefully.`).join(" ");
+  await installVoice(page);
+  await page.route("**/walkthrough", (route) => route.fulfill({ json: { steps: [step(long), STEPS[1]] } }));
+  await openRepo(page, "Walkthrough");
+  await page.getByRole("button", { name: "Start walkthrough" }).click();
+  await expect(page.getByText(/Step 2 of 2 — tour finished/)).toBeVisible();
+  const said = await narrations(page);
+  const parts = said.slice(0, -1);
+  expect(parts.length).toBeGreaterThan(1);
+  expect(parts.every((t) => t.length <= 180)).toBe(true);
+  expect(parts.join(" ")).toBe(long);
+  expect(said.at(-1)).toBe(STEPS[1].narration);
+  expect(await spoken(page)).not.toContain("<overlap>");
 });

@@ -73,10 +73,19 @@ CREATE TABLE IF NOT EXISTS eval_runs (
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS repo_artifacts (     -- cached diagram + tour
+CREATE TABLE IF NOT EXISTS repo_artifacts (     -- cached diagram + overview (tour retired)
   repo_id     bigint NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
-  kind        text NOT NULL CHECK (kind IN ('diagram','tour')),
+  kind        text NOT NULL CHECK (kind IN ('diagram','tour','overview')),
   content     text NOT NULL,
   created_at  timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (repo_id, kind)
 );
+
+-- idempotent upgrade for databases created before 'overview' existed (only touches the table when needed)
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'repo_artifacts_kind_check'
+                 AND pg_get_constraintdef(oid) LIKE '%overview%') THEN
+    ALTER TABLE repo_artifacts DROP CONSTRAINT IF EXISTS repo_artifacts_kind_check;
+    ALTER TABLE repo_artifacts ADD CONSTRAINT repo_artifacts_kind_check CHECK (kind IN ('diagram','tour','overview'));
+  END IF;
+END $$;

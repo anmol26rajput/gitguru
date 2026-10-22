@@ -1,5 +1,6 @@
 """HTTP API: pool, token auth, CORS, body limit. Routes live below the auth router."""
 import json
+import logging
 import math
 import secrets
 import threading
@@ -12,13 +13,14 @@ from typing import Literal
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from gitguru import config, diagram, evals, jobs, llm, walkthrough
+from gitguru import config, diagram, evals, jobs, llm, overview, tts, walkthrough
 from gitguru.ask import answer
 from gitguru.db import make_pool
 from gitguru.ingest import IngestError
 
+log = logging.getLogger(__name__)
 MAX_BODY_BYTES = 1_000_000
 MAX_QUESTIONS_PER_HOUR = 60
 _asked: deque[float] = deque()  # time.monotonic() of each ask in the last hour; in-memory, per process
@@ -104,9 +106,19 @@ def add_repo(body: AddRepo, request: Request) -> dict:
 
 @protected.get("/repos")
 def list_repos(request: Request) -> list:
-    with request.app.state.pool.connection() as conn:
-        rows = conn.execute(f"SELECT {REPO_COLS} FROM repos ORDER BY last_used_at DESC").fetchall()
-    return [repo_json(r) for r in rows]
+    cols = ", ".join(f"r.{c}" for c in REPO_COLS.split(", "))
+    with request.app.state.pool.connection() as conn:  # one query: latest index job + cached overview per repo
+        rows = conn.execute(
+            f"SELECT {cols}, j.progress, j.message, a.content FROM repos r "
+            "LEFT JOIN LATERAL (SELECT progress, message FROM jobs WHERE repo_id = r.id AND kind = 'index' "
+            "ORDER BY created_at DESC, id DESC LIMIT 1) j ON true "
+            "LEFT JOIN repo_artifacts a ON a.repo_id = r.id AND a.kind = 'overview' "
+            "ORDER BY r.last_used_at DESC").fetchall()
+    out = []
+    for *repo, progress, message, content in rows:
+        o = diagram._valid_overview(content)
+        out.append({**repo_json(repo), "summary": overview.blurb(o) if o else None, "progress": progress, "message": message})
+    return out
 
 
 @protected.get("/repos/{repo_id}")
@@ -189,12 +201,14 @@ def ask(repo_id: int, body: Ask, request: Request) -> StreamingResponse:
 def get_diagram(repo_id: int, request: Request) -> dict:
     with request.app.state.pool.connection() as conn:
         _ready_repo(conn, repo_id)
-        if conn.execute("SELECT 1 FROM repo_artifacts WHERE repo_id = %s AND kind = 'tour'", (repo_id,)).fetchone() is None:
-            take_question_slot()  # only a tour that needs the LLM counts
+        if diagram.needs_overview(conn, repo_id):
+            take_question_slot()  # only an overview that needs the LLM counts
         try:
             return diagram.get_artifacts(conn, repo_id)
         except llm.LLMError as e:
             raise HTTPException(status_code=503, detail=str(e))
+        except ValidationError:  # the model's JSON was still invalid after the repair retry
+            raise HTTPException(status_code=503, detail="I couldn't build the overview, try again")
 
 
 class WalkthroughRequest(BaseModel):
@@ -255,6 +269,20 @@ def get_file(repo_id: int, path: str, request: Request) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="file not found")
     return dict(zip(("path", "lang", "content"), row))
+
+
+class TTSRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1500)
+
+
+@protected.post("/tts")
+def post_tts(body: TTSRequest) -> Response:
+    # sync def: FastAPI runs it in a worker thread, so asyncio.run inside tts is safe and never blocks the loop
+    try:
+        return Response(content=tts.synthesize(body.text, config.TTS_VOICE), media_type="audio/mpeg")
+    except tts.TTSError as e:
+        log.warning("tts failed: %s", e)
+        raise HTTPException(status_code=503, detail="voice service unavailable")
 
 
 app.include_router(protected)

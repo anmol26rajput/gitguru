@@ -65,8 +65,9 @@ def test_diagram_takes_question_slot_only_when_overview_uncached(client, ready_r
     monkeypatch.setattr(diagram.llm, "complete_json", lambda m, schema: fixed_overview())
     from gitguru import api
     api._asked.clear()
-    client.get(f"/repos/{ready_repo}/diagram")
-    client.get(f"/repos/{ready_repo}/diagram")
+    guest = {"X-GitGuru-Token": ""}  # the owner skips the limit, so count a guest's
+    client.get(f"/repos/{ready_repo}/diagram", headers=guest)
+    client.get(f"/repos/{ready_repo}/diagram", headers=guest)
     assert len(api._asked) == 1
 
 
@@ -87,5 +88,5 @@ def test_stale_cached_overview_is_rebuilt_and_takes_a_slot(client, ready_repo, c
     api._asked.clear()
     conn.execute("INSERT INTO repo_artifacts (repo_id, kind, content) VALUES (%s, 'overview', '{\"old\": 1}')", (ready_repo,))
     monkeypatch.setattr(diagram.llm, "complete_json", lambda m, schema: fixed_overview())
-    r = client.get(f"/repos/{ready_repo}/diagram")
+    r = client.get(f"/repos/{ready_repo}/diagram", headers={"X-GitGuru-Token": ""})  # a guest: the owner skips
     assert r.status_code == 200 and r.json()["overview"]["summary"] == "Tiny auth." and len(api._asked) == 1

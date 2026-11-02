@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_ZOOM, MIN_ZOOM, clampZoom, fitZoom, scrollShift, stepZoom, wheelZoom } from "./zoom.ts";
+import { MAX_ZOOM, MIN_ZOOM, clampZoom, fitZoom, scrollShift, startZoom, stepZoom, topDown, wheelZoom } from "./zoom.ts";
 
 test("clampZoom keeps zoom within 10%-400%", () => {
   assert.equal(clampZoom(0.01), MIN_ZOOM);
@@ -38,4 +38,17 @@ test("scrollShift keeps the point under the pointer fixed", () => {
   // wanted edge = 110 - 200 = -90; layout left the edge at 10, so scroll by 100.
   assert.equal(scrollShift(110, 10, 10, 2), 100);
   assert.equal(scrollShift(110, 10, 10, 1), 0);
+});
+
+test("startZoom: desktop starts at Fit; phones start at Fit but never below 50%", () => {
+  assert.equal(startZoom(0.17, false), 0.17);
+  assert.equal(startZoom(0.17, true), 0.5);
+  assert.equal(startZoom(0.8, true), 0.8);
+});
+
+test("topDown turns only a leading LR flow into TD and leaves everything else alone", () => {
+  assert.equal(topDown('graph LR\n s0["Read"] --> s1["LR"]'), 'graph TD\n s0["Read"] --> s1["LR"]');
+  assert.equal(topDown("  flowchart LR\n a --> b"), "  flowchart TD\n a --> b");
+  assert.equal(topDown("graph TD\n a --> b"), "graph TD\n a --> b");
+  assert.equal(topDown("graph LRX\n a --> b"), "graph LRX\n a --> b");
 });

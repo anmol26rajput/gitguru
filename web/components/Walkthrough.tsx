@@ -10,7 +10,7 @@ import { Key } from "./ui";
 type Step = { path: string; start_line: number; end_line: number; narration: string };
 
 export default function Walkthrough({ repoId }: { repoId: number }) {
-  const { canSpeak, speak, prefetch, cancel } = useVoice();
+  const { canSpeak, speak, prefetch, cancel, unlockAudio } = useVoice();
   const [topic, setTopic] = useState("");
   const [steps, setSteps] = useState<Step[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -22,6 +22,7 @@ export default function Walkthrough({ repoId }: { repoId: number }) {
   const token = useRef(0); // bumped for every utterance; a late `end` from an old one carries a stale token
 
   async function start() {
+    unlockAudio(); // inside the tap: the narration starts after the awaits below, which iPhone/Safari would refuse
     setLoading(true);
     setError(null);
     try {
@@ -70,6 +71,9 @@ export default function Walkthrough({ repoId }: { repoId: number }) {
     setI(n);
   };
   const step = steps?.[i];
+  const newTour = (className: string) => (
+    <Key variant="ghost" size="sm" onClick={() => setSteps(null)} className={className}>New walkthrough</Key>
+  );
 
   if (!steps || !step)
     return (
@@ -101,8 +105,10 @@ export default function Walkthrough({ repoId }: { repoId: number }) {
       </main>
     );
 
-  // Player: code left, explanation right from 900px; stacked (code on top) when narrow. The code pane is part of
-  // the layout, not an overlay, so it never covers the controls and has no Close that would end the tour.
+  // Player: code left, explanation right from 900px; stacked (code on top, 40dvh) when narrow. The code pane is part
+  // of the layout, not an overlay, so it never covers the controls and has no Close that would end the tour.
+  // Phones: Back / Pause / Next stick to the bottom of the screen (always reachable) and "New walkthrough" moves up
+  // to the step line, so the sticky bar stays one row. Only one of the two "New walkthrough" keys is ever displayed.
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col min-[900px]:flex-row">
       <h1 className="sr-only">Walkthrough</h1>
@@ -115,24 +121,27 @@ export default function Walkthrough({ repoId }: { repoId: number }) {
           endLine={step.end_line}
         />
       </div>
-      <section aria-label="Explanation" className="flex min-w-0 flex-1 flex-col gap-4 px-6 pt-5 pb-8">
+      <section aria-label="Explanation" className="flex min-w-0 flex-1 flex-col gap-4 px-6 pt-5 pb-8 max-[900px]:pb-0">
         <div className="flex items-center gap-3">
-          <p className="shrink-0 text-[13px] text-muted">
+          {/* Phones: the label may wrap ("— tour finished") so the line never runs wider than the screen. */}
+          <p className="shrink-0 text-[13px] text-muted max-[900px]:min-w-0 max-[900px]:shrink">
             Step {i + 1} of {steps.length}
             {finished && " — tour finished"}
           </p>
-          <div aria-hidden="true" className="h-1 flex-1 rounded-full bg-border">
+          <div aria-hidden="true" className="h-1 flex-1 rounded-full bg-border max-[900px]:min-w-10">
             <div className="h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${((i + 1) / steps.length) * 100}%` }} />
           </div>
+          {newTour("shrink-0 min-[900px]:hidden")}
         </div>
         {error && <ErrorBox error={error} />}
-        <p ref={cap} tabIndex={0} aria-live="polite" className="max-h-[45vh] overflow-y-auto text-[15px] leading-relaxed">{step.narration}</p>
-        <div className="flex flex-wrap items-center gap-2">
-          <Key variant="ghost" onClick={() => go(i - 1)} disabled={i === 0}>
+        <p ref={cap} tabIndex={0} aria-live="polite" className="max-h-[45dvh] overflow-y-auto text-[15px] leading-relaxed">{step.narration}</p>
+        <div className="flex flex-wrap items-center gap-2 max-[900px]:sticky max-[900px]:bottom-0 max-[900px]:-mx-6 max-[900px]:mt-auto max-[900px]:flex-nowrap max-[900px]:border-t max-[900px]:border-border max-[900px]:bg-bg max-[900px]:px-6 max-[900px]:py-3">
+          <Key variant="ghost" onClick={() => go(i - 1)} disabled={i === 0} className="max-[900px]:flex-1">
             <span aria-hidden="true">←</span> Back
           </Key>
           {canSpeak && (
             <Key
+              className="max-[900px]:flex-1"
               onClick={() => {
                 setFinished(false);
                 setError(null);
@@ -142,10 +151,10 @@ export default function Walkthrough({ repoId }: { repoId: number }) {
               {paused ? "Resume" : "Pause"}
             </Key>
           )}
-          <Key variant="ghost" onClick={() => go(i + 1)} disabled={i === last}>
+          <Key variant="ghost" onClick={() => go(i + 1)} disabled={i === last} className="max-[900px]:flex-1">
             Next <span aria-hidden="true">→</span>
           </Key>
-          <Key variant="ghost" size="sm" onClick={() => setSteps(null)} className="ml-auto">New walkthrough</Key>
+          {newTour("ml-auto max-[900px]:hidden")}
         </div>
       </section>
     </main>

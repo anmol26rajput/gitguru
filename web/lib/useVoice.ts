@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api.ts";
-import { pickVoice, speechText, splitSpeech, ttsPieces, voiceError } from "./speech.ts";
+import { SILENT_WAV, pickVoice, speechText, splitSpeech, ttsPieces, voiceError } from "./speech.ts";
 
 // The DOM lib types SpeechSynthesis but not SpeechRecognition (still prefixed in Chrome).
 type Recognition = {
@@ -40,7 +40,9 @@ const UTTERANCE_CHARS = 180;
 // ponytail: module-level state is shared by all hook users; fine with a single chat on screen.
 // `current` identifies the live speak() call (server audio or browser voice); a late event from any older one is ignored.
 let current: object | null = null;
+// One <audio> for the page, created on first use: iPhone/Safari unlock an element (see unlockAudio), not the page.
 let audio: HTMLAudioElement | null = null;
+const player = () => (audio ??= new Audio());
 let audioUrl: string | null = null;
 const fetching = new Set<AbortController>();
 
@@ -53,11 +55,28 @@ function stopAll() {
     audio.onended = audio.onerror = null;
     audio.pause();
     audio.removeAttribute("src");
-    audio = null;
   }
   if (audioUrl) URL.revokeObjectURL(audioUrl);
   audioUrl = null;
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+}
+
+// iPhone/Safari start audio and speech only inside a tap (a click or key handler); a play() or speak() after an
+// `await` is outside it and refused. Call this first thing in the handler, before any await: playing a silent clip on
+// the shared element and speaking an empty utterance unlock both for the rest of the page load. It runs on every tap
+// (a failed unlock gets another chance) except while a speak() is live or a clip is playing, so it never replaces a
+// playing piece's src and its cancel() never cuts the browser voice off.
+function unlockAudio() {
+  if (current || audio?.paused === false) return;
+  if ("Audio" in window) {
+    const a = player();
+    a.src = SILENT_WAV;
+    a.play().catch(() => {}); // only the call inside the tap matters; a speak() right after may cut it short
+  }
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(""));
+    window.speechSynthesis.cancel(); // the unlock happens in speak(); an empty utterance may never fire `end`
+  }
 }
 
 // getVoices() is empty until the browser has loaded them (`voiceschanged`), so prime the list early.
@@ -100,10 +119,11 @@ function prefetch(text: string) {
   if (first) fetchVoice(first).catch(() => {});
 }
 
-// Play an MP3 to the end. Rejects on an audio error or a refused play().
+// Play an MP3 to the end on the shared element. Rejects on an audio error or a refused play().
 async function playBlob(blob: Blob) {
   const url = (audioUrl = URL.createObjectURL(blob));
-  const a = (audio = new Audio(url));
+  const a = player();
+  a.src = url;
   await new Promise<void>((resolve, reject) => {
     a.onended = () => resolve();
     a.onerror = () => reject(new Error("audio error"));
@@ -165,6 +185,10 @@ export function useVoice() {
     stopAll();
     const me = {};
     current = me;
+    const done = () => {
+      current = null; // read to the end: idle again, like after an error or cancel
+      onEnd?.();
+    };
 
     // Reads `rest` as a queue of short utterances, each started by the previous one's `end`; only the last one's
     // `end` is the end of the text.
@@ -172,8 +196,11 @@ export function useVoice() {
       fetching.forEach((c) => c.abort()); // the server voice is done for this text: drop its in-flight fetches
       fetching.clear();
       const parts = splitSpeech(rest, UTTERANCE_CHARS);
-      if (!parts.length) return onEnd?.(); // nothing to say: an empty utterance may never fire `end`
-      if (!("speechSynthesis" in window)) return onError?.("not-supported");
+      if (!parts.length) return done(); // nothing to say: an empty utterance may never fire `end`
+      if (!("speechSynthesis" in window)) {
+        current = null; // idle again, like after any other error
+        return onError?.("not-supported");
+      }
       const synth = window.speechSynthesis;
       synth.cancel();
       const v = pickVoice(voices.length ? voices : synth.getVoices());
@@ -184,7 +211,7 @@ export function useVoice() {
         u.onend = () => {
           if (current !== me) return;
           if (k + 1 < parts.length) say(k + 1);
-          else onEnd?.();
+          else done();
         };
         u.onerror = (e) => {
           if (current !== me || e.error === "interrupted" || e.error === "canceled") return;
@@ -199,7 +226,7 @@ export function useVoice() {
     const pieces = ttsPieces(speechText(text));
     let next: Promise<Blob> | undefined = pieces.length ? fetchVoice(pieces[0]) : undefined;
     const play = async (i: number) => {
-      if (i >= pieces.length) return onEnd?.();
+      if (i >= pieces.length) return done();
       let ok = true;
       try {
         const blob = await within(next!, TTS_WAIT_MS); // the user is waiting on this piece now
@@ -220,5 +247,5 @@ export function useVoice() {
     else browserVoice("");
   }, []);
 
-  return { canListen, canSpeak, listening, error, listen, stop, speak, prefetch, cancel: stopAll };
+  return { canListen, canSpeak, listening, error, listen, stop, speak, prefetch, cancel: stopAll, unlockAudio };
 }

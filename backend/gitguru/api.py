@@ -1,4 +1,5 @@
-"""HTTP API: pool, token auth, CORS, body limit. Routes live below the auth router."""
+"""HTTP API: pool, open access with guest caps (D48), CORS, body limit. Only DELETE needs the owner token."""
+import hashlib
 import json
 import logging
 import math
@@ -10,12 +11,15 @@ from collections.abc import Iterable, Iterator
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from gitguru import config, diagram, evals, jobs, llm, overview, tts, walkthrough
+from gitguru import config, diagram, evals, jobs, llm, overview, pages, tts, walkthrough
 from gitguru.ask import answer
 from gitguru.db import make_pool
 from gitguru.ingest import IngestError
@@ -25,6 +29,7 @@ MAX_BODY_BYTES = 1_000_000
 MAX_QUESTIONS_PER_HOUR = 60
 _asked: deque[float] = deque()  # time.monotonic() of each ask in the last hour; in-memory, per process
 _asked_lock = threading.Lock()
+_SALT = secrets.token_hex(16)  # visitor-key salt when APP_TOKEN is unset; once per process
 
 
 def recover_interrupted(pool) -> None:
@@ -43,13 +48,36 @@ async def lifespan(app: FastAPI):
     app.state.pool.close()
 
 
-def require_token(x_gitguru_token: str = Header("")) -> None:
-    """Fail closed: an unset APP_TOKEN rejects everything."""
-    if not config.APP_TOKEN or not secrets.compare_digest(x_gitguru_token.encode(), config.APP_TOKEN.encode()):
+def is_owner(request: Request) -> bool:
+    """The request carries APP_TOKEN. Fail closed: an unset APP_TOKEN makes nobody the owner."""
+    token = request.headers.get("X-GitGuru-Token", "")
+    return bool(config.APP_TOKEN) and secrets.compare_digest(token.encode(), config.APP_TOKEN.encode())
+
+
+def visitor(request: Request) -> str | None:
+    """A guest's job-cap key: sha256(client IP + APP_TOKEN or a per-process secret), 16 hex chars. None = owner."""
+    if is_owner(request):
+        return None
+    # ponytail: behind the proxy the IP comes from X-Forwarded-For, which can be spoofed; the all-guests cap
+    # is the backstop, switch to a signed cookie if abused
+    ip = request.client.host if request.client else ""
+    return hashlib.sha256((ip + (config.APP_TOKEN or _SALT)).encode()).hexdigest()[:16]
+
+
+def require_token(request: Request) -> None:
+    if not is_owner(request):
         raise HTTPException(status_code=401, detail="missing or invalid token")
 
 
-app = FastAPI(title="GitGuru", lifespan=lifespan)
+class AsciiJSONResponse(JSONResponse):
+    """Every JSON body is ASCII-escaped: a lone surrogate (valid JSON escape, not UTF-8) echoed back in an error
+    would otherwise crash the encoder and turn a 4xx into a 500. Streaming/SSE responses are not affected."""
+
+    def render(self, content) -> bytes:
+        return json.dumps(content, ensure_ascii=True, allow_nan=False, separators=(",", ":")).encode("ascii")
+
+
+app = FastAPI(title="GitGuru", lifespan=lifespan, default_response_class=AsciiJSONResponse)
 
 
 @app.middleware("http")
@@ -57,20 +85,31 @@ async def limit_body(request: Request, call_next):
     # ponytail: trusts Content-Length; chunked uploads bypass it, add a streaming counter if that matters
     length = request.headers.get("content-length", "0")
     if length.isdigit() and int(length) > MAX_BODY_BYTES:
-        return JSONResponse({"detail": "request body too large"}, status_code=413)
+        return AsciiJSONResponse({"detail": "request body too large"}, status_code=413)
     return await call_next(request)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError) -> Response:
+    return AsciiJSONResponse({"detail": jsonable_encoder(exc.errors())}, status_code=422)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
+    # FastAPI's default handler builds its own (non-ASCII) JSONResponse; same body shape and headers, ours.
+    if exc.status_code in {204, 205, 304} or exc.status_code < 200:  # bodyless statuses, as the default handler
+        return Response(status_code=exc.status_code, headers=exc.headers)
+    return AsciiJSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
 
 
 # Added after limit_body so CORS is outermost and 413/401 responses carry CORS headers.
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"],
                    allow_headers=["X-GitGuru-Token", "Content-Type"])
 
-protected = APIRouter(dependencies=[Depends(require_token)])
-
 
 @app.get("/health")
-def health() -> dict:
-    return {"ok": True}
+def health(request: Request) -> dict:
+    return {"ok": True, "owner": is_owner(request)}  # open; Settings uses "owner" to check a saved token
 
 
 def sse(events: Iterable[dict]) -> Iterator[str]:
@@ -89,12 +128,14 @@ def repo_json(row) -> dict:
     return dict(zip(("id", "kind", "source", "title", "status", "stats", "last_used_at"), row))
 
 
-@protected.post("/repos")
+@app.post("/repos")
 def add_repo(body: AddRepo, request: Request) -> dict:
     pool = request.app.state.pool
     try:
         with pool.connection() as conn:
-            repo_id, job_id = jobs.create_index_job(conn, body.source)
+            repo_id, job_id = jobs.create_index_job(conn, body.source, visitor(request))
+    except jobs.ConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except IngestError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except jobs.LimitError as e:
@@ -104,7 +145,47 @@ def add_repo(body: AddRepo, request: Request) -> dict:
     return {"repo_id": repo_id, "job_id": job_id}
 
 
-@protected.get("/repos")
+class AddPage(BaseModel):
+    url: str = Field(max_length=2000)
+    title: str = Field(max_length=300)
+    text: str
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def printable_title(cls, v):  # untrusted: cleaned (before the str check rejects a lone surrogate), never a 422
+        return pages.clean_title(v) if isinstance(v, str) else v
+
+    @field_validator("url")
+    @classmethod
+    def http_url(cls, v: str) -> str:
+        if not pages.valid_url(v):
+            raise ValueError("url must be an http or https address")
+        return v
+
+
+@app.post("/pages")
+def add_page(body: AddPage, request: Request) -> dict:
+    text = pages.clean_text(body.text)
+    if not text:
+        raise HTTPException(status_code=422, detail="this page has no readable text")
+    if len(text) > pages.MAX_TEXT:
+        raise HTTPException(status_code=422, detail=f"page text is too long (max {pages.MAX_TEXT:,} characters)")
+    source = pages.page_source(body.url)
+    title = body.title or source  # already cleaned by AddPage
+    pool = request.app.state.pool
+    try:
+        with pool.connection() as conn:
+            repo_id, job_id = jobs.create_page_job(conn, source, title, visitor(request))
+    except IngestError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except jobs.LimitError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    # A reused job is submitted again; run_page_job skips it unless still queued.
+    jobs.EXECUTOR.submit(jobs.run_page_job, pool, job_id, repo_id, text)
+    return {"repo_id": repo_id, "job_id": job_id}
+
+
+@app.get("/repos")
 def list_repos(request: Request) -> list:
     cols = ", ".join(f"r.{c}" for c in REPO_COLS.split(", "))
     with request.app.state.pool.connection() as conn:  # one query: latest index job + cached overview per repo
@@ -121,7 +202,7 @@ def list_repos(request: Request) -> list:
     return out
 
 
-@protected.get("/repos/{repo_id}")
+@app.get("/repos/{repo_id}")
 def get_repo(repo_id: int, request: Request) -> dict:
     with request.app.state.pool.connection() as conn:
         row = conn.execute(f"SELECT {REPO_COLS} FROM repos WHERE id = %s", (repo_id,)).fetchone()
@@ -130,7 +211,7 @@ def get_repo(repo_id: int, request: Request) -> dict:
     return repo_json(row)
 
 
-@protected.delete("/repos/{repo_id}", status_code=204)
+@app.delete("/repos/{repo_id}", status_code=204, dependencies=[Depends(require_token)])
 def delete_repo(repo_id: int, request: Request) -> Response:
     with request.app.state.pool.connection() as conn:
         gone = conn.execute("DELETE FROM repos WHERE id = %s RETURNING id", (repo_id,)).fetchone()
@@ -139,7 +220,7 @@ def delete_repo(repo_id: int, request: Request) -> Response:
     return Response(status_code=204)
 
 
-@protected.get("/jobs/{job_id}/events")
+@app.get("/jobs/{job_id}/events")
 def job_stream(job_id: int, request: Request) -> StreamingResponse:
     pool = request.app.state.pool
     with pool.connection() as conn:
@@ -158,8 +239,10 @@ class Ask(BaseModel):
     history: list[Message] = Field(default_factory=list, max_length=6)
 
 
-def take_question_slot() -> None:
-    """Count one ask against the hourly limit, or raise 429."""
+def take_question_slot(request: Request) -> None:
+    """Count one ask against the hourly limit, or raise 429. The owner skips the limit."""
+    if is_owner(request):
+        return
     now = time.monotonic()
     with _asked_lock:
         while _asked and now - _asked[0] > 3600:
@@ -181,12 +264,12 @@ def _ready_repo(conn, repo_id: int) -> str:
     return row[0]
 
 
-@protected.post("/repos/{repo_id}/ask")
+@app.post("/repos/{repo_id}/ask")
 def ask(repo_id: int, body: Ask, request: Request) -> StreamingResponse:
     pool = request.app.state.pool
     with pool.connection() as conn:  # real HTTP errors must happen before the stream starts
         _ready_repo(conn, repo_id)
-        take_question_slot()
+        take_question_slot(request)
         conn.execute("UPDATE repos SET last_used_at = now() WHERE id = %s", (repo_id,))
     history = [m.model_dump() for m in body.history]
 
@@ -197,12 +280,12 @@ def ask(repo_id: int, body: Ask, request: Request) -> StreamingResponse:
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-@protected.get("/repos/{repo_id}/diagram")
+@app.get("/repos/{repo_id}/diagram")
 def get_diagram(repo_id: int, request: Request) -> dict:
     with request.app.state.pool.connection() as conn:
         _ready_repo(conn, repo_id)
         if diagram.needs_overview(conn, repo_id):
-            take_question_slot()  # only an overview that needs the LLM counts
+            take_question_slot(request)  # only an overview that needs the LLM counts
         try:
             return diagram.get_artifacts(conn, repo_id)
         except llm.LLMError as e:
@@ -215,11 +298,13 @@ class WalkthroughRequest(BaseModel):
     topic: str | None = Field(default=None, max_length=200)
 
 
-@protected.post("/repos/{repo_id}/walkthrough")
+@app.post("/repos/{repo_id}/walkthrough")
 def post_walkthrough(repo_id: int, body: WalkthroughRequest, request: Request) -> dict:
     with request.app.state.pool.connection() as conn:
         _ready_repo(conn, repo_id)
-        take_question_slot()
+        if conn.execute("SELECT kind FROM repos WHERE id = %s", (repo_id,)).fetchone()[0] == "page":
+            raise HTTPException(status_code=422, detail="walkthroughs are for code repositories")
+        take_question_slot(request)
         try:
             steps = walkthrough.make_walkthrough(conn, repo_id, body.topic)
         except walkthrough.WalkthroughError as e:
@@ -234,13 +319,15 @@ class EvalRequest(BaseModel):
     generate: bool = True
 
 
-@protected.post("/repos/{repo_id}/evals")
+@app.post("/repos/{repo_id}/evals")
 def post_eval(repo_id: int, body: EvalRequest, request: Request) -> dict:
+    if body.questions is not None and not is_owner(request):  # before any cap or insert
+        raise HTTPException(status_code=403, detail="Only the owner can set eval questions.")
     pool = request.app.state.pool
     with pool.connection() as conn:
         _ready_repo(conn, repo_id)
         try:
-            job_id = jobs.create_eval_job(conn, repo_id)
+            job_id = jobs.create_eval_job(conn, repo_id, visitor(request))
         except jobs.LimitError as e:
             raise HTTPException(status_code=429, detail=str(e))
         if body.questions is not None:  # after the cap check, before the job can start
@@ -250,7 +337,7 @@ def post_eval(repo_id: int, body: EvalRequest, request: Request) -> dict:
     return {"job_id": job_id}
 
 
-@protected.get("/repos/{repo_id}/evals")
+@app.get("/repos/{repo_id}/evals")
 def list_evals(repo_id: int, request: Request) -> list:
     with request.app.state.pool.connection() as conn:
         if conn.execute("SELECT 1 FROM repos WHERE id = %s", (repo_id,)).fetchone() is None:
@@ -261,7 +348,7 @@ def list_evals(repo_id: int, request: Request) -> list:
             for r in rows]
 
 
-@protected.get("/repos/{repo_id}/file")
+@app.get("/repos/{repo_id}/file")
 def get_file(repo_id: int, path: str, request: Request) -> dict:
     with request.app.state.pool.connection() as conn:
         row = conn.execute("SELECT path, lang, content FROM files WHERE repo_id = %s AND path = %s",
@@ -271,18 +358,23 @@ def get_file(repo_id: int, path: str, request: Request) -> dict:
     return dict(zip(("path", "lang", "content"), row))
 
 
+_tts_slots = threading.BoundedSemaphore(4)  # concurrent syntheses; each holds a worker thread for up to ~15 s
+
+
 class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=1500)
 
 
-@protected.post("/tts")
+@app.post("/tts")
 def post_tts(body: TTSRequest) -> Response:
     # sync def: FastAPI runs it in a worker thread, so asyncio.run inside tts is safe and never blocks the loop
+    if not _tts_slots.acquire(blocking=False):  # never queue: the web falls back to the browser voice on any 503
+        raise HTTPException(status_code=503, detail="voice is busy, try again")
     try:
         return Response(content=tts.synthesize(body.text, config.TTS_VOICE), media_type="audio/mpeg")
     except tts.TTSError as e:
         log.warning("tts failed: %s", e)
         raise HTTPException(status_code=503, detail="voice service unavailable")
+    finally:
+        _tts_slots.release()
 
-
-app.include_router(protected)

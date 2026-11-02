@@ -25,6 +25,7 @@
   --shadow-card: 0 1px 2px rgba(31, 35, 40, 0.06), 0 8px 18px -10px rgba(31, 35, 40, 0.25);
   --shadow-key: 0 3px 0 var(--accent-edge), 0 6px 14px rgba(17, 99, 41, 0.25);
   --shadow-ghost: 0 2px 0 var(--border);
+  --shadow-sheet: 0 -8px 28px -10px rgba(31, 35, 40, 0.35); /* the phone code sheet, cast upward */
 
   /* Home's tilted code window: always a dark code pane in GitHub-dark colours */
   --win-bg: #0d1117;
@@ -67,6 +68,7 @@
     --danger-text: #ff7b72;
 
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 18px -10px rgba(0, 0, 0, 0.7);
+    --shadow-sheet: 0 -8px 28px -10px rgba(0, 0, 0, 0.85);
 
     --diagram-pane: #0d1117;
     --diagram-edge: #0a0d12;
@@ -250,6 +252,35 @@ samp {
     box-shadow: none;
   }
 
+  @media (max-width: 899.98px) {
+    .key,
+    .key-ghost,
+    .pill {
+      min-height: 44px;
+    }
+    .pill {
+      padding-inline: 12px; /* the four repo tabs fit one row at 375px */
+    }
+    .key-sm {
+      min-width: 44px;
+      padding: 3px 12px;
+      font-size: 13px;
+    }
+    .chip {
+      min-height: 44px;
+      padding: 1px 10px;
+    }
+    /* Citation numbers sit inside a sentence, so they stay line height (the inline-target exception) but are 44px
+       wide, with real space between neighbours (Chat's CiteLink). No hit area reaches past a chip's own box, so a
+       neighbouring chip, on the same line or the next, can never take the tap. */
+    .answer .chip {
+      min-height: 0;
+      min-width: 44px;
+      justify-content: center;
+      padding: 2px 7px;
+    }
+  }
+
   /* Section label: put it on the h2 itself so the heading stays. */
   .section-label {
     font-family: var(--font-geist-mono), ui-monospace, monospace;
@@ -294,13 +325,41 @@ samp {
     background: var(--win-hl);
   }
 
-  /* Code panel beside the page: a full-screen overlay when narrow, a right-hand column from 900px.
-     Slides in from the right once when opened (the reduced-motion rule turns it off). */
+  /* Code panel: a right-hand column from 900px that slides in from the right; below 900px a bottom sheet
+     (75dvh, rounded top, a decorative grab bar) that slides up. Once when opened; reduced motion turns it off. */
   .code-panel {
-    position: fixed;
-    inset: 0;
-    z-index: 10;
     animation: panel-in 200ms ease-out;
+  }
+  @media (max-width: 899.98px) {
+    .code-panel {
+      position: fixed;
+      inset: auto 0 0 0;
+      z-index: 10;
+      height: 75dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: 16px 16px 0 0;
+      box-shadow: var(--shadow-sheet);
+      animation-name: sheet-up;
+    }
+    /* Grab bar: decoration only (a pseudo-element is not in the accessibility tree); there is no swipe. */
+    .code-panel::before {
+      content: "";
+      flex-shrink: 0;
+      width: 36px;
+      height: 4px;
+      margin: 8px auto 4px;
+      border-radius: 999px;
+      background: var(--border);
+    }
+    .code-panel > * {
+      flex: 1 1 0%;
+      min-height: 0;
+    }
   }
   @media (min-width: 900px) {
     .code-panel {
@@ -344,6 +403,24 @@ samp {
 @keyframes panel-in {
   from {
     transform: translateX(100%);
+  }
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+/* Phones (below 900px): every tap target is at least 44 x 44 px.
+   Inputs get 16px text so iOS Safari doesn't zoom the page when one is focused. Unlayered, so it beats text-* utilities. */
+@media (max-width: 899.98px) {
+  input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  /* The sheet covers the page: keep the page behind it from scrolling. */
+  body:has(.code-panel) {
+    overflow: hidden;
   }
 }
 

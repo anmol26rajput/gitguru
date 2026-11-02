@@ -47,6 +47,10 @@ export function ttsPieces(text: string, first = 150, max = 500): string[] {
   return head ? [head, ...splitSpeech(rest.join(" "), max)] : [];
 }
 
+// 12 ms of silence (a 244-byte WAV: 8 kHz, 16-bit mono). unlockAudio plays it inside a tap.
+export const SILENT_WAV =
+  "data:audio/wav;base64,UklGRuwAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YcgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
 // Browser fallback voice, English only: a clear female en-US voice, else a named female voice in another English,
 // else any English voice. List order alone would pick Karen (en-AU) over Samantha (en-US) on macOS.
 export function pickVoice<T extends { name: string; lang: string }>(voices: readonly T[]): T | undefined {

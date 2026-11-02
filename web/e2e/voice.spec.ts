@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { SILENT_WAV } from "../lib/speech";
 import { saveSettings } from "./helpers";
 
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*" };
@@ -59,6 +60,7 @@ async function installVoice(page: Page, recError?: string, synthError?: string) 
       configurable: true,
       value: {
         speak(u: Utterance) {
+          if (!u.text) return; // the empty utterance unlockAudio speaks inside a click (iPhone): not speech
           if (active || w.__audio) w.__spoken.push("<overlap>");
           w.__spoken.push(u.text);
           w.__utterances.push(u);
@@ -81,7 +83,8 @@ async function installVoice(page: Page, recError?: string, synthError?: string) 
 }
 
 // The stub MP3 is not decodable (a real <audio> would fire `error`), so Audio is replaced by a player that records
-// play() and reports `ended` a moment later: the exact surface useVoice touches.
+// play() and reports `ended` a moment later: the exact surface useVoice touches. useVoice creates one element and
+// sets `src` per piece, so pause() also drops a pending `ended` (a paused real element never reports one).
 async function installAudio(page: Page) {
   await page.addInitScript(() => {
     const w = window as unknown as VoiceWindow;
@@ -90,17 +93,20 @@ async function installAudio(page: Page) {
     class FakeAudio {
       onended: (() => void) | null = null;
       onerror: (() => void) | null = null;
-      constructor(public src: string) {}
+      timer = 0;
+      constructor(public src = "") {}
       play() {
+        if (this.src.startsWith("data:")) return Promise.resolve(); // unlockAudio's silent clip: not narration
         w.__played++;
         w.__audio = this;
-        setTimeout(() => {
+        this.timer = window.setTimeout(() => {
           if (w.__audio === this) w.__audio = null;
           this.onended?.();
         }, 30);
         return Promise.resolve();
       }
       pause() {
+        clearTimeout(this.timer);
         if (w.__audio === this) w.__audio = null;
       }
       removeAttribute() {}
@@ -240,6 +246,57 @@ test("walkthrough: with the server voice, every narration plays as audio and the
   expect(await played(page)).toBe(STEPS.length);
   expect(await narrations(page)).toEqual([]); // speechSynthesis.speak was never called
   expect(await spoken(page)).not.toContain("<overlap>");
+});
+
+// iPhone/Safari refuse play() unless that element was first played inside a tap, and code after an `await` is no
+// longer inside it. Stand-in: a real <audio> whose play() rejects unless the same element was played during a
+// trusted click (the flag lasts for the click's task, which includes the form submit, never past an await).
+// /tts serves the silent WAV the unlock plays, since a real <audio> needs a decodable body.
+async function installTapRule(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as unknown as VoiceWindow;
+    w.__played = 0;
+    let tap = false;
+    addEventListener("click", (e) => {
+      if (!e.isTrusted) return;
+      tap = true;
+      setTimeout(() => (tap = false));
+    }, true);
+    const unlocked = new WeakSet<HTMLMediaElement>();
+    const realPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      if (tap) unlocked.add(this);
+      if (!unlocked.has(this)) return Promise.reject(new DOMException("play() needs a tap", "NotAllowedError"));
+      if (this.src.startsWith("blob:")) w.__played++; // a /tts piece, not the silent unlock clip
+      return realPlay.call(this);
+    };
+  });
+  const wav = Buffer.from(SILENT_WAV.split(",")[1], "base64");
+  await page.route("**/tts", (route) => route.fulfill({ status: 200, headers: { ...CORS, "content-type": "audio/wav" }, body: wav }));
+}
+
+test("iPhone rule: audio unlocked in the Start click still plays after the await, through the server voice", async ({ page }) => {
+  await installVoice(page);
+  await installTapRule(page);
+  await mockWalkthrough(page);
+  await openRepo(page, "Walkthrough");
+  await page.getByRole("button", { name: "Start walkthrough" }).click();
+  await expect(page.getByText(/Step 3 of 3 — tour finished/)).toBeVisible();
+  expect(await played(page)).toBe(STEPS.length);
+  expect(await narrations(page)).toEqual([]); // no fallback: every play() after the await was allowed
+});
+
+test("iPhone rule: Read aloud unlocks in its click and plays the answer through the server voice", async ({ page }) => {
+  await installVoice(page);
+  await installTapRule(page);
+  await openRepo(page);
+  await page.getByPlaceholder("Ask about this repo…").fill("How are passwords hashed?");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Fake answer citing")).toBeVisible();
+  await page.getByRole("button", { name: "Read aloud" }).click();
+  await expect.poll(() => played(page)).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "Read aloud" })).toBeVisible(); // read to the end
+  expect(await narrations(page)).toEqual([]); // no fallback: the /tts audio was allowed after the await
 });
 
 const step = (narration: string) => ({ path: "auth.py", start_line: 1, end_line: 10, narration });

@@ -1,36 +1,75 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { embedHref, useEmbed } from "@/components/Embed";
 import ErrorBox, { fail, type Failure } from "@/components/ErrorBox";
-import { Key } from "@/components/ui";
+import { Key, KeyLink } from "@/components/ui";
 import { api, type Repo } from "@/lib/api";
+import { subscribePage, takePage, type PageMessage } from "@/lib/embed";
 import { readSSE } from "@/lib/sse";
 
 // The repo being added right now: its card shows this SSE progress instead of the list's snapshot.
 type Live = { repoId: number | null; pct: number; message: string };
 
 // Home: hero (title, URL box, tilted code window) above the repos as stacked sheet cards.
+// Embedded (the extension's side panel): no hero, no top Nav; a Settings link, the URL box and the repos. Whatever
+// finishes indexing there (a URL, ?source=, or page text from the extension) opens its Chat.
 export default function RepoList() {
   const source = useSearchParams().get("source") ?? "";
+  const embed = useEmbed();
+  const router = useRouter();
   const [repos, setRepos] = useState<Repo[] | null>(null);
   const [url, setUrl] = useState(source);
   const [live, setLive] = useState<Live | null>(null);
   const [error, setError] = useState<Failure | null>(null);
   const autoStarted = useRef(false);
+  const busyRef = useRef(false);
+  const mounted = useRef(true); // a job that finishes after the user left Home must not pull them into its Chat
+  useEffect(() => {
+    mounted.current = true;
+    return () => void (mounted.current = false);
+  }, []);
 
   const load = useCallback(
-    () => api("/repos").then((r) => r.json()).then(setRepos).catch((e) => setError(fail(e))),
+    (): Promise<Repo[] | null> =>
+      api("/repos")
+        .then((r) => r.json())
+        .then((list: Repo[]) => {
+          setRepos(list);
+          return list;
+        })
+        .catch((e) => {
+          setError(fail(e));
+          return null;
+        }),
     [],
   );
 
-  const add = useCallback(async (src: string) => {
+  // The server was asleep when the list first loaded (see Waking): now it answers, so clear the error and retry.
+  useEffect(() => {
+    const awake = () => {
+      setError(null);
+      void load();
+    };
+    window.addEventListener("gitguru:awake", awake);
+    return () => window.removeEventListener("gitguru:awake", awake);
+  }, [load]);
+
+  // Start an index job (POST /repos or /pages), follow its progress, and in embed mode open the repo's Chat when done.
+  const run = useCallback(async (path: string, body: object): Promise<boolean> => {
+    if (busyRef.current) {
+      setError({ message: "Still indexing another item. Try again when it finishes." });
+      return false;
+    }
+    busyRef.current = true;
     setError(null);
     setLive({ repoId: null, pct: 0, message: "Starting…" });
     let outcome: "done" | "error" | null = null;
+    let openId: number | null = null;
     try {
-      const post = await api("/repos", { method: "POST", body: JSON.stringify({ source: src }) });
+      const post = await api(path, { method: "POST", body: JSON.stringify(body) });
       const { repo_id, job_id } = await post.json();
       setLive({ repoId: repo_id, pct: 0, message: "Queued" });
       void load(); // the new card appears now and follows the live progress
@@ -43,31 +82,63 @@ export default function RepoList() {
           setError({ message: d.message ?? "Indexing failed." });
         }
       });
-      if (outcome === "done") setUrl("");
+      if (outcome === "done") openId = repo_id;
       else if (!outcome) setError({ message: "Connection closed before indexing finished." });
     } catch (e) {
       setError(fail(e));
     } finally {
       await load();
       setLive(null);
+      busyRef.current = false;
     }
-  }, [load]);
+    if (openId === null) return false;
+    if (embed && mounted.current) router.push(embedHref(`/r/${openId}`, true));
+    return true;
+  }, [load, embed, router]);
+
+  const add = useCallback(async (src: string) => {
+    if (await run("/repos", { source: src })) setUrl("");
+  }, [run]);
+
+  const addPage = useCallback((p: PageMessage) => void run("/pages", p), [run]);
 
   useEffect(() => {
-    void load();
-    // ?source= (share target / extension): index it once, even under StrictMode's double effect.
-    if (source && !autoStarted.current) {
-      autoStarted.current = true;
-      void add(source);
-    }
-  }, [load, add, source]);
+    const loaded = load();
+    // ?source= (the extension's repo button): in embed mode only, once even under StrictMode's double effect. A repo
+    // that is already ready opens its Chat without a job (jobs count toward the daily cap). Outside embed the
+    // URL box is only pre-filled.
+    if (!source || !embed || autoStarted.current) return;
+    autoStarted.current = true;
+    void loaded.then((list) => {
+      const ready = list?.find((r) => r.source === source && r.status === "ready");
+      if (!ready) void add(source);
+      else if (mounted.current) router.push(embedHref(`/r/${ready.id}`, true));
+    });
+  }, [load, add, source, embed, router]);
+
+  // Page text from the extension (see components/Embed.tsx): take what is waiting, and anything that arrives later.
+  useEffect(() => {
+    if (!embed) return;
+    const take = () => {
+      const p = takePage();
+      if (p) addPage(p);
+    };
+    take();
+    return subscribePage(take);
+  }, [embed, addPage]);
 
   const busy = live !== null;
 
   return (
     <main className="mx-auto w-full max-w-5xl px-6 pb-20">
-      <section className="grid items-center gap-10 pt-8 pb-12 min-[900px]:grid-cols-[1.05fr_1fr] min-[900px]:gap-14 min-[900px]:pt-14 min-[900px]:pb-16">
+      {embed && (
+        <div className="flex justify-end pt-2">
+          <KeyLink href={embedHref("/settings", true)} variant="ghost" size="sm">Settings</KeyLink>
+        </div>
+      )}
+      <section className={embed ? "pt-2 pb-6" : "grid items-center gap-10 pt-8 pb-12 min-[900px]:grid-cols-[1.05fr_1fr] min-[900px]:gap-14 min-[900px]:pt-14 min-[900px]:pb-16"}>
         <div>
+          {!embed && <>
           <h1 className="text-[30px] leading-[1.15] font-[750] tracking-[-0.025em]">
             Understand any <br />
             codebase.
@@ -76,6 +147,7 @@ export default function RepoList() {
             Paste a GitHub link and ask anything, <br className="max-sm:hidden" />
             in simple words or in full detail.
           </p>
+          </>}
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -97,7 +169,7 @@ export default function RepoList() {
           </form>
           {error && <div className="mt-4"><ErrorBox error={error} /></div>}
         </div>
-        <CodeWindow />
+        {!embed && <CodeWindow />}
       </section>
 
       {/* On a failed load the error box above says it all: no empty "Your repos" label. */}
@@ -109,10 +181,10 @@ export default function RepoList() {
           <p className="text-muted">No repos yet. Paste a GitHub link above to add the first one.</p>
         ) : (
           // gap-y leaves room for each sheet's under-sheet, which hangs ~7px below the card
-          <ul className="grid grid-cols-1 gap-x-4 gap-y-6 min-[600px]:grid-cols-2 min-[900px]:grid-cols-3">
+          <ul className={embed ? "grid grid-cols-1 gap-y-6" : "grid grid-cols-1 gap-x-4 gap-y-6 min-[600px]:grid-cols-2 min-[900px]:grid-cols-3"}>
             {repos.map((r) => (
               <li key={r.id} className="grid grid-cols-1">
-                <RepoCard repo={r} live={live?.repoId === r.id ? live : null} />
+                <RepoCard repo={r} live={live?.repoId === r.id ? live : null} embed={embed} />
               </li>
             ))}
           </ul>
@@ -122,14 +194,14 @@ export default function RepoList() {
   );
 }
 
-function RepoCard({ repo, live }: { repo: Repo; live: Live | null }) {
+function RepoCard({ repo, live, embed }: { repo: Repo; live: Live | null; embed: boolean }) {
   const status = live ? "indexing" : repo.status;
   const files = typeof repo.stats.files === "number" ? `${repo.stats.files} ${repo.stats.files === 1 ? "file" : "files"}` : null;
   const name = <span className="min-w-0 truncate font-mono font-[650]">{repo.title}</span>;
 
   if (status === "ready") {
     return (
-      <Link href={`/r/${repo.id}`} className="sheet">
+      <Link href={embedHref(`/r/${repo.id}`, embed)} className="sheet">
         <span className="flex items-baseline gap-3">
           {name}
           <span className="ml-auto shrink-0 font-mono text-xs text-accent-text">

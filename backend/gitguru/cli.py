@@ -34,8 +34,7 @@ def cmd_index(conn, args) -> None:
     repo_id = index_source(conn, args.source, _progress)
     print(file=sys.stderr)
     title, stats = conn.execute("SELECT title, stats FROM repos WHERE id = %s", (repo_id,)).fetchone()
-    print(f"#{repo_id} {title} ready: {stats.get('files')} files, {stats.get('chunks')} chunks")
-
+    print(f"#{repo_id} {title} ready: {stats.get('files')} files, {stats.get('chunks')} chunk") 
 
 def cmd_ask(conn, args) -> None:
     sources = []

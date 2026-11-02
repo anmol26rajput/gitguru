@@ -1,0 +1,34 @@
+# Full stack for a local try-out: docker compose up --build  (API on :7860, Postgres on :5434).
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: gitguru
+      POSTGRES_PASSWORD: gitguru
+      POSTGRES_DB: gitguru
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gitguru -d gitguru"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Wins over any DATABASE_URL in .env, which points at the host's Postgres.
+      DATABASE_URL: postgresql://gitguru:gitguru@db:5432/gitguru
+    ports:
+      - "7860:7860"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

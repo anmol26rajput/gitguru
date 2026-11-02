@@ -132,7 +132,7 @@ export default function EvalDashboard({ repoId }: { repoId: number }) {
 
       {runs && runs.length > 0 && (
         <details className="space-y-3">
-          <summary className="cursor-pointer rounded-md font-medium">Show the detailed numbers</summary>
+          <summary className="cursor-pointer rounded-md font-medium max-[900px]:py-3">Show the detailed numbers</summary>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>

@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at  timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz
 );
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS client text;  -- visitor key of a guest's job; NULL = the owner's (D48)
 
 CREATE TABLE IF NOT EXISTS eval_questions (
   id          bigserial PRIMARY KEY,

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { dotTiming, litAnimation, litKeyframes } from "@/lib/diagramAnim";
-import { MAX_ZOOM, MIN_ZOOM, clampZoom, fitZoom, scrollShift, stepZoom, wheelZoom } from "@/lib/zoom";
+import { MAX_ZOOM, MIN_ZOOM, clampZoom, fitZoom, scrollShift, startZoom, stepZoom, topDown, wheelZoom } from "@/lib/zoom";
 import ErrorBox, { fail, type Failure } from "./ErrorBox";
 import { Key } from "./ui";
 
@@ -22,6 +22,8 @@ type FsEl = HTMLElement & { webkitRequestFullscreen?: () => Promise<void> };
 const PAD = 32; // the diagram box's p-4 on both sides
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+// Read once per render: a phone rotated to wide keeps its phone layout until the diagram renders again.
+const isPhone = () => window.matchMedia("(max-width: 899.98px)").matches;
 
 // Mermaid's "base" theme from the design tokens of the current colour scheme (read at render time).
 function themeVariables() {
@@ -130,7 +132,8 @@ function MermaidView({ code, label, steps = false, onError }: { code: string; la
         const m = (await import("mermaid")).default;
         m.initialize({ startOnLoad: false, securityLevel: "strict", look: "classic", theme: "base", themeVariables: themeVariables(), flowchart: { useMaxWidth: false } });
         const id = `repo-diagram-${++renderCount}`;
-        const { svg } = await m.render(id, code);
+        const phone = isPhone();
+        const { svg } = await m.render(id, steps && phone ? topDown(code) : code); // phones: the flow reads top-down
         if (stale || !box.current) return;
         box.current.innerHTML = svg; // svg is sanitized by mermaid's strict mode
         const el = box.current.querySelector("svg");
@@ -140,7 +143,12 @@ function MermaidView({ code, label, steps = false, onError }: { code: string; la
         el.style.maxWidth = "none";
         natural.current = { w: vb.width, h: vb.height };
         zoomNow.current = 1;
-        fit(); // every diagram starts at Fit
+        fit(); // every diagram starts at Fit; on phones the module graph then goes up to at least 50% (scrolls in its pane)
+        const sc = scroller.current;
+        if (phone && !steps && sc) {
+          setZoom(startZoom(zoomNow.current, true));
+          sc.scrollTo((sc.scrollWidth - sc.clientWidth) / 2, 0); // top centre: where a top-down graph starts
+        }
       } catch (e) {
         if (!stale) onError(fail(e));
       }
@@ -148,7 +156,7 @@ function MermaidView({ code, label, steps = false, onError }: { code: string; la
     return () => {
       stale = true;
     };
-  }, [code, steps, onError, fit]);
+  }, [code, steps, onError, fit, setZoom]);
 
   // Ctrl/⌘ + wheel (a trackpad pinch arrives as ctrl+wheel) zooms around the pointer. Needs a non-passive listener,
   // which React's onWheel is not, so preventDefault (stop the page zooming) would be ignored there.
@@ -200,7 +208,8 @@ function MermaidView({ code, label, steps = false, onError }: { code: string; la
     e.preventDefault();
   }
 
-  // Drag to pan with a mouse (touch already scrolls natively).
+  // Drag to pan with a mouse only. Touch is left to the browser (no touch-action, no touch handlers): one finger
+  // scrolls the pane, two fingers pinch-zoom the page. The zoom keys are 44px tap targets on phones (globals.css).
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     if (e.pointerType !== "mouse" || e.button !== 0) return;
     const sc = e.currentTarget;
@@ -298,7 +307,7 @@ export default function Diagram({ repoId }: { repoId: number }) {
             </ol>
           </section>
 
-          <section className="space-y-3">
+          {(data.mermaid || o.parts.length > 0) && <section className="space-y-3">
             <h2 className="section-label">The main parts</h2>
             {data.mermaid ? (
               <MermaidView code={data.mermaid} label="Module dependency diagram" onError={setError} />
@@ -313,7 +322,7 @@ export default function Diagram({ repoId }: { repoId: number }) {
                 </li>
               ))}
             </ul>
-          </section>
+          </section>}
 
           {o.glossary.length > 0 && (
             <section className="space-y-2">

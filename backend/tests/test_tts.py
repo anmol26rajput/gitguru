@@ -1,6 +1,6 @@
 import pytest
 
-from gitguru import tts
+from gitguru import api, tts
 
 H = {"X-GitGuru-Token": "test-token"}
 
@@ -42,8 +42,9 @@ def test_tts_text_length_validated(client, monkeypatch):
     assert client.post("/tts", json={"text": "a" * 1500}, headers=H).status_code == 200
 
 
-def test_tts_requires_token(client):
-    assert client.post("/tts", json={"text": "Hi"}, headers={"X-GitGuru-Token": ""}).status_code == 401
+def test_tts_needs_no_token(client, monkeypatch):
+    monkeypatch.setattr(tts, "_fetch", lambda text, voice: b"mp3")
+    assert client.post("/tts", json={"text": "Hi"}, headers={"X-GitGuru-Token": ""}).status_code == 200
 
 
 def test_tts_cache_skips_second_fetch(client, monkeypatch):
@@ -89,3 +90,24 @@ def test_fetch_empty_audio_and_errors_raise_ttserror(monkeypatch):
         tts._fetch("hi", "v")
     monkeypatch.setattr(tts.edge_tts, "Communicate", Good)
     assert tts._fetch("hi", "v") == b"abcd"
+
+
+def test_tts_busy_is_503_and_slots_are_released(client, monkeypatch):
+    monkeypatch.setattr(tts, "_fetch", lambda t, v: b"mp3")
+    held = [api._tts_slots.acquire(blocking=False) for _ in range(4)]
+    try:
+        assert all(held)
+        r = client.post("/tts", json={"text": "Hi"}, headers=H)
+        assert r.status_code == 503 and r.json()["detail"] == "voice is busy, try again"
+    finally:
+        for _ in held:
+            api._tts_slots.release()
+    assert client.post("/tts", json={"text": "Hi"}, headers=H).status_code == 200  # slot free again
+
+
+def test_tts_failure_releases_its_slot(client, monkeypatch):
+    def boom(t, v):
+        raise tts.TTSError("no audio")
+    monkeypatch.setattr(tts, "_fetch", boom)
+    for _ in range(6):  # more failures than slots: a leak would turn these into "busy"
+        assert client.post("/tts", json={"text": "Hi"}, headers=H).json()["detail"] == "voice service unavailable"

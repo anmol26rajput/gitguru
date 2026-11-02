@@ -12,6 +12,7 @@ from tree_sitter_language_pack import get_language
 from gitguru import llm
 
 from .chunk import LANG_BY_EXT, _parser, detect_lang
+from .pages import PAGE_PATH
 
 _JS_QUERY = """
 (import_statement source: (string (string_fragment) @s))
@@ -311,9 +312,10 @@ def get_artifacts(conn, repo_id: int) -> dict:
     if not {"diagram", "overview"} <= cached.keys():
         files = dict(conn.execute("SELECT path, content FROM files WHERE repo_id = %s", (repo_id,)))
         edges = collapse(file_edges(files, go_module_of(files)))
-        title = conn.execute("SELECT title FROM repos WHERE id = %s", (repo_id,)).fetchone()[0]
+        title, kind = conn.execute("SELECT title, kind FROM repos WHERE id = %s", (repo_id,)).fetchone()
+        shown = {"README.md": files[PAGE_PATH]} if kind == "page" and PAGE_PATH in files else files  # a page's text is its README
         builders = {"diagram": lambda: to_mermaid(edges),
-                    "overview": lambda: overview.clean(overview.build_overview(title, files, edges), set(files)).model_dump_json()}
+                    "overview": lambda: overview.clean(overview.build_overview(title, shown, edges), set(files)).model_dump_json()}
         for kind, build in builders.items():
             if kind not in cached:
                 conn.execute("INSERT INTO repo_artifacts (repo_id, kind, content) VALUES (%s, %s, %s) "

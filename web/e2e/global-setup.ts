@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 
-const env = { ...process.env, DATABASE_URL: "postgresql://localhost:5433/gitguru_test" };
+const env = { ...process.env, DATABASE_URL: process.env.E2E_DATABASE_URL ?? "postgresql://localhost:5433/gitguru_test" };
 
 // Empty the e2e DB first (pytest shares it and can leave eval rows behind), then index the tiny
 // fixture repo from disk so the tests never touch GitHub.

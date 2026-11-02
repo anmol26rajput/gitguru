@@ -55,7 +55,7 @@ function CiteLink({ href, children }: { href?: string; children?: ReactNode }) {
   if (Number.isNaN(n)) return <SafeLink href={href}>{children}</SafeLink>;
   const source = sources.find((s) => s.n === n);
   if (!source) return <span>{n}</span>;
-  return <Chip onClick={(e) => onOpen(source, e.currentTarget)} className="mx-0.5">{n}</Chip>;
+  return <Chip onClick={(e) => onOpen(source, e.currentTarget)} className="mx-0.5 max-[900px]:mx-1">{n}</Chip>;
 }
 const MARKDOWN = { a: CiteLink };
 
@@ -119,7 +119,7 @@ export default function Chat({ repoId }: { repoId: number }) {
   const opener = useRef<HTMLElement | null>(null); // the chip that opened the code panel gets focus back on close
   const open = viewing !== null;
 
-  // While the panel is open: below 900px it covers the page, so everything behind it is inert.
+  // While the panel is open: below 900px it is a bottom sheet over the page, so everything behind it is inert.
   // On close, focus goes back to the chip that opened it.
   useEffect(() => {
     const el = panel.current;
@@ -192,6 +192,7 @@ export default function Chat({ repoId }: { repoId: number }) {
   }
 
   function toggleRead(i: number, text: string) {
+    voice.unlockAudio(); // inside the tap, so iPhone/Safari still play the voice after the /tts await
     if (reading === i) {
       voice.cancel();
       setReading(null);
@@ -201,8 +202,10 @@ export default function Chat({ repoId }: { repoId: number }) {
     }
   }
 
+  // overflow-x-clip: while the panel slides in from the right it sits off-screen, and Close's autoFocus would scroll the
+  // whole page sideways to reach it (clip, unlike hidden, keeps the sticky header, panel and question box working).
   return (
-    <div className="flex min-h-0 flex-1">
+    <div className="flex min-h-0 flex-1 overflow-x-clip">
       <main className="flex min-w-0 flex-1 flex-col">
         <div className="mx-auto flex w-full max-w-[720px] flex-1 flex-col px-6 pt-6">
           <h1 className="sr-only">{repo?.title ?? "Repo"}</h1>
@@ -265,7 +268,7 @@ export default function Chat({ repoId }: { repoId: number }) {
                   disabled={streaming}
                   aria-label={voice.listening ? "Stop listening" : "Speak your question"}
                   aria-pressed={voice.listening}
-                  className="inline-flex items-center gap-1.5 rounded-key px-2.5 py-2 text-muted active:translate-y-px disabled:opacity-50 aria-pressed:bg-accent-soft aria-pressed:text-accent-text"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-key px-2.5 py-2 text-muted max-[900px]:min-h-11 max-[900px]:min-w-11 active:translate-y-px disabled:opacity-50 aria-pressed:bg-accent-soft aria-pressed:text-accent-text"
                 >
                   <svg {...icon} width={16} height={16}><rect x="5.5" y="1.5" width="5" height="8" rx="2.5" /><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2" /></svg>
                   {voice.listening && <span className="text-[13px]">Listening…</span>}

@@ -29,5 +29,7 @@ def make_pool(url: str | None = None) -> ConnectionPool:
     """Apply the schema once, then open a small pool of configured autocommit connections."""
     url = url or config.DATABASE_URL
     connect(url).close()
+    # ponytail: LLM calls hold a pooled connection while they stream, so POOL_MAX bounds concurrent asks; the
+    # upgrade is read -> release -> LLM -> re-acquire to write.
     return ConnectionPool(url, kwargs={"autocommit": True}, configure=configure,
-                          check=ConnectionPool.check_connection, min_size=1, max_size=5, open=True)
+                          check=ConnectionPool.check_connection, min_size=1, max_size=config.POOL_MAX, open=True)

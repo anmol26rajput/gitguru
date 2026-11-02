@@ -22,3 +22,7 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "jinaai/jina-embeddings-v2-base-code")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 TTS_VOICE = os.getenv("TTS_VOICE", "en-US-AvaNeural")
+GUEST_DAILY_JOBS = int(os.getenv("GUEST_DAILY_JOBS", "5"))  # index + eval jobs per visitor per day (D48)
+GUEST_TOTAL_DAILY_JOBS = int(os.getenv("GUEST_TOTAL_DAILY_JOBS", "20"))  # ... and across all visitors
+GUEST_DB_MAX_BYTES = int(os.getenv("GUEST_DB_MAX_BYTES", "400000000"))  # guests stop adding past this DB size
+POOL_MAX = int(os.getenv("POOL_MAX", "15"))  # DB pool size; LLM calls hold a connection (see db.make_pool)

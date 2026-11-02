@@ -1,0 +1,60 @@
+name: Deploy Space
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["backend/**"]
+
+concurrency:
+  group: deploy-space
+  cancel-in-progress: false # let a running deploy finish
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # This does not wait for CI: only merge to main when CI is green.
+      - name: Push backend/ to the Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }} # e.g. your-user/gitguru-api
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
+            echo "::notice::Skipping deploy: set the HF_TOKEN secret and the HF_SPACE repository variable."
+            exit 0
+          fi
+          dir=$(mktemp -d)
+          # backend/ without tests, venv and caches (the Dockerfile and .dockerignore come along).
+          tar -C backend --exclude=./tests --exclude=./.venv --exclude=__pycache__ --exclude=.pytest_cache --exclude='.env*' -cf - . | tar -C "$dir" -xf -
+          # The Space's README (with its front matter) replaces backend/README.md; the Dockerfile only needs the file to exist.
+          cat > "$dir/README.md" <<'README'
+          ---
+          title: GitGuru API
+          emoji: 🧭
+          colorFrom: indigo
+          colorTo: blue
+          sdk: docker
+          app_port: 7860
+          pinned: false
+          ---
+
+          Backend API for GitGuru: ask questions about any codebase and get cited answers.
+          README
+          cd "$dir"
+          git init -q -b main
+          git add -A
+          git -c user.name="github-actions" -c user.email="actions@users.noreply.github.com" \
+            commit -q -m "Deploy ${GITHUB_SHA}"
+          # Auth goes in a header passed via env, so the token is in neither the URL nor argv. Basic is what
+          # git sends for user:token (HF's documented https auth); a Bearer header is not documented for git.
+          auth=$(printf 'user:%s' "$HF_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: Basic $auth" \
+            git push -q --force "https://huggingface.co/spaces/${HF_SPACE}" HEAD:main
+          echo "Deployed ${GITHUB_SHA} to ${HF_SPACE}"

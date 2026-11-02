@@ -1,3 +1,5 @@
+import time
+
 from gitguru import api
 from tests.conftest import parse_sse
 
@@ -39,12 +41,24 @@ def test_ask_validation(client, ready_repo):
     assert client.post("/repos/999999/ask", json={"question": "q"}).status_code == 404
 
 
+GUEST = {"X-GitGuru-Token": ""}
+
+
 def test_question_rate_limit(client, ready_repo, monkeypatch):
     monkeypatch.setattr(api, "MAX_QUESTIONS_PER_HOUR", 1)
     api._asked.clear()
-    ask(client, ready_repo, "first")
-    r = client.post(f"/repos/{ready_repo}/ask", json={"question": "second"})
+    assert client.post(f"/repos/{ready_repo}/ask", json={"question": "first"}, headers=GUEST).status_code == 200
+    r = client.post(f"/repos/{ready_repo}/ask", json={"question": "second"}, headers=GUEST)
     assert r.status_code == 429 and "question limit reached (1/hour)" in r.json()["detail"]
+
+
+def test_owner_skips_the_question_limit(client, ready_repo, monkeypatch):
+    monkeypatch.setattr(api, "MAX_QUESTIONS_PER_HOUR", 1)
+    api._asked.clear()
+    api._asked.append(time.monotonic())  # the hour's one question is used up
+    assert client.post(f"/repos/{ready_repo}/ask", json={"question": "q"}, headers=GUEST).status_code == 429
+    ask(client, ready_repo, "q")  # the fixture client sends the owner token
+    assert len(api._asked) == 1  # and the owner's question took no slot
 
 
 def test_file_only_serves_stored_paths(client, ready_repo):

@@ -2,6 +2,7 @@ import json
 
 from gitguru import evals, jobs
 from tests.conftest import FIXTURE_REPO
+from tests.test_access import ME
 from tests.test_jobs_api import events
 
 QFILE = FIXTURE_REPO.parent / "tiny_repo_questions.json"
@@ -47,16 +48,17 @@ def test_generate_flag_calls_generator(client, ready_repo, monkeypatch):
     assert calls == [ready_repo] and last["event"] == "error" and "no eval questions" in last["data"]["message"]
 
 
-def test_eval_counts_toward_daily_job_cap(client, ready_repo, conn, monkeypatch):
+def test_guest_eval_counts_toward_the_visitor_cap(client, ready_repo, conn, monkeypatch):
     monkeypatch.setattr(jobs.EXECUTOR, "submit", lambda *a, **k: None)
-    # ready_repo made 1 index job: 1 + 8 index + 1 eval = 10 → the next job is over the cap
-    conn.execute("INSERT INTO jobs (kind, status) SELECT 'index', 'done' FROM generate_series(1, 8)")
-    conn.execute("INSERT INTO jobs (kind, status) VALUES ('eval', 'done')")
-    r = client.post(f"/repos/{ready_repo}/evals", json={"generate": False})
-    assert r.status_code == 429 and r.json()["detail"] == "daily limit of 10 jobs (index + eval) reached, try again tomorrow"
+    guest = {"X-GitGuru-Token": ""}
+    # ready_repo's index job was the owner's and counts nothing: 4 index + 1 eval = 5 → the next job is over the cap
+    conn.execute("INSERT INTO jobs (kind, status, client) SELECT 'index', 'done', %s FROM generate_series(1, 4)", (ME,))
+    conn.execute("INSERT INTO jobs (kind, status, client) VALUES ('eval', 'done', %s)", (ME,))
+    r = client.post(f"/repos/{ready_repo}/evals", json={"generate": False}, headers=guest)
+    assert r.status_code == 429 and r.json()["detail"] == "You can add 5 repos or pages a day. Try again tomorrow."
     # one fewer job and it goes through
     conn.execute("DELETE FROM jobs WHERE id = (SELECT max(id) FROM jobs)")
-    assert client.post(f"/repos/{ready_repo}/evals", json={"generate": False}).status_code == 200
+    assert client.post(f"/repos/{ready_repo}/evals", json={"generate": False}, headers=guest).status_code == 200
 
 
 def test_eval_routes_404_and_409(client, conn):

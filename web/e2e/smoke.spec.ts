@@ -38,15 +38,45 @@ test("ask → cited answer → code viewer", async ({ page }) => {
   // Focus moves into the panel; Escape closes it and returns focus to the citation that opened it.
   const close = page.getByRole("button", { name: "Close viewer" });
   await expect(close).toBeFocused();
+  // Focusing Close while the panel slides in from off-screen must not scroll the page sideways.
+  expect(await page.evaluate(() => window.scrollX)).toBe(0);
   await page.keyboard.press("Escape");
   await expect(close).toHaveCount(0);
   await expect(page.getByRole("button", { name: "1", exact: true })).toBeFocused();
 });
 
-test("no token shows the settings hint", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByRole("link", { name: /settings/i }).last()).toBeVisible();
-  await expect(page.getByText("Check your API URL and token in Settings.")).toBeVisible();
+test("no token: Home lists the repo and Chat answers, and no token header is sent", async ({ page }) => {
+  const sent: (string | undefined)[] = [];
+  page.on("request", (r) => void (r.url().startsWith("http://localhost:8001") && sent.push(r.headers()["x-gitguru-token"])));
+  await page.goto("/"); // nothing saved: the default API URL, no token
+  expect(await page.evaluate(() => localStorage.getItem("gitguru.token"))).toBeNull();
+  await page.getByRole("link", { name: /tiny_repo/ }).click();
+  await page.getByPlaceholder("Ask about this repo…").fill("How are passwords hashed?");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Fake answer citing")).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: /token/i })).toHaveCount(0); // (Next's route announcer is an alert too)
+  expect(sent.length).toBeGreaterThan(0);
+  expect(sent.every((t) => t === undefined)).toBe(true);
+});
+
+test("settings: the owner token is optional and only for deleting", async ({ page }) => {
+  await page.goto("/settings");
+  await expect(page.getByLabel("Owner token (optional)")).toHaveAccessibleDescription("Only needed to delete repos and to skip the daily limits.");
+});
+
+test("settings: Test connection says whether the token is the owner's", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByLabel("API URL").fill("http://localhost:8001");
+  const test = page.getByRole("button", { name: "Test connection" });
+  const status = page.getByRole("status").filter({ hasText: /^Connected/ });
+  await test.click();
+  await expect(status).toHaveText("Connected");
+  await page.getByLabel("Owner token (optional)").fill("e2e-token");
+  await test.click();
+  await expect(status).toHaveText("Connected as the owner.");
+  await page.getByLabel("Owner token (optional)").fill("wrong");
+  await test.click();
+  await expect(status).toHaveText("Connected. This token is not the owner token, so you are a guest.");
 });
 
 test("chat starter button submits its question", async ({ page }) => {

@@ -1,12 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Test DB is shared with pytest: never run `npm run e2e` and pytest at the same time.
-const DATABASE_URL = "postgresql://localhost:5433/gitguru_test";
+// Test DB is shared with pytest: never run `npm run e2e` and pytest at the same time. CI overrides it.
+const DATABASE_URL = process.env.E2E_DATABASE_URL ?? "postgresql://localhost:5433/gitguru_test";
 
 export default defineConfig({
   testDir: "./e2e",
   globalSetup: "./e2e/global-setup.ts",
   workers: 1,
+  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
   use: { baseURL: "http://localhost:3001" },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [

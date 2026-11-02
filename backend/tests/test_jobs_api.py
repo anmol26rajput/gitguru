@@ -36,13 +36,6 @@ def test_non_github_and_bad_urls_are_400(client):
     assert client.post("/repos", json={"source": "https://gitlab.com/a/b"}).status_code == 400
 
 
-def test_eleventh_index_job_today_is_429(client, conn, monkeypatch):
-    monkeypatch.setattr(jobs.EXECUTOR, "submit", lambda *a, **k: None)
-    conn.execute("INSERT INTO jobs (kind, status) SELECT 'index', 'done' FROM generate_series(1, 10)")
-    r = client.post("/repos", json={"source": URL})
-    assert r.status_code == 429 and "tomorrow" in r.json()["detail"]
-
-
 def test_twenty_first_repo_evicts_least_recently_used(client, conn, monkeypatch):
     monkeypatch.setattr(jobs.EXECUTOR, "submit", lambda *a, **k: None)
     for i in range(20):

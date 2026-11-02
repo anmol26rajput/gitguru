@@ -57,7 +57,7 @@ function detailText(detail: unknown, fallback: string): string {
 export async function api(path: string, init: RequestInit = {}): Promise<Response> {
   const { apiUrl, token } = getSettings();
   const headers = new Headers(init.headers);
-  headers.set("X-GitGuru-Token", token);
+  if (token) headers.set("X-GitGuru-Token", token); // owner only: no caps, can delete; guests send nothing
   if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
 
   let res: Response;
@@ -67,7 +67,8 @@ export async function api(path: string, init: RequestInit = {}): Promise<Respons
     throw new ApiError(0, `Cannot reach the API at ${apiUrl}. Check your API URL in Settings.`);
   }
   if (res.ok) return res;
-  if (res.status === 401) throw new ApiError(401, "Check your API URL and token in Settings.");
+  // Only DELETE is owner-only, so a 401 always means a missing or wrong owner token.
+  if (res.status === 401) throw new ApiError(401, "Only the owner can do this. Check the owner token in Settings.");
   const body = await res.json().catch(() => null);
   throw new ApiError(res.status, detailText(body?.detail, res.statusText || `HTTP ${res.status}`));
 }

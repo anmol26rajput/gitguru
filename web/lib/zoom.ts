@@ -30,3 +30,15 @@ export function scrollShift(pointer: number, oldOrigin: number, newOrigin: numbe
   const wantedOrigin = pointer - (pointer - oldOrigin) * ratio;
   return newOrigin - wantedOrigin;
 }
+
+// Phones (< 900px). The module graph starts at Fit but never below 50%, so its labels stay readable; it then scrolls
+// sideways inside its own pane. Desktop starts at Fit.
+export const PHONE_MIN_START_ZOOM = 0.5;
+export function startZoom(fit: number, phone: boolean): number {
+  return phone ? clampZoom(Math.max(fit, PHONE_MIN_START_ZOOM)) : fit;
+}
+
+// Phones: a left-to-right Mermaid flow is drawn top-down instead, so it fits the narrow screen at a readable size.
+export function topDown(code: string): string {
+  return code.replace(/^(\s*(?:graph|flowchart))\s+LR\b/, "$1 TD");
+}

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GitGuru</title>
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    html, body { height: 100%; }
+    body { display: flex; flex-direction: column; }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    .brand { font-weight: 700; }
+    .brand span { color: var(--accent-text); }
+    iframe { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
+    footer { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--border); }
+    footer .key { width: 100%; }
+    #msg { margin: 0; font-size: 13px; color: var(--muted); }
+    #msg.err { color: var(--danger-text); }
+    /* empty: still rendered (so role=status announces), but out of the layout and invisible */
+    #msg:empty { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand"><span aria-hidden="true">&#9670;</span> GitGuru</div>
+    <button id="opts" class="key-ghost key-sm" type="button">Options</button>
+  </header>
+  <iframe id="app" title="GitGuru" allow="microphone"></iframe>
+  <footer>
+    <p id="msg" role="status"></p>
+    <button id="repo" class="key" type="button" hidden>Ask about this repo</button>
+    <button id="page" class="key" type="button" hidden>Ask about this page</button>
+  </footer>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

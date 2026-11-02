@@ -19,11 +19,13 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
-      command: "npm run dev -- --port 3001",
+      // CI uses a production build: `next dev` compiles each route on first visit, which outran the 5 s
+      // expect timeout on cold runners (embed.spec.ts). Locally dev mode is faster to start.
+      command: process.env.CI ? "npm run build && npm run start -- --port 3001" : "npm run dev -- --port 3001",
       env: { NEXT_PUBLIC_API_URL: "http://localhost:8001" },
       url: "http://localhost:3001",
       reuseExistingServer: false,
-      timeout: 120_000,
+      timeout: process.env.CI ? 300_000 : 120_000,
     },
   ],
 });

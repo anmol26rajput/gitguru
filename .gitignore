@@ -9,3 +9,6 @@ node_modules/
 .superpowers/
 .impeccable/
 docs/
+.claude/
+skills-lock.json
+.neon
